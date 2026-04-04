@@ -10,7 +10,7 @@ path = "src/bin/init.rs"
 
 [[bin]]
 name = "cogman"
-path = "src/bin/cogman.rs"
+path = "src/bin/cogman/main.rs"
 
 [[bin]]
 name = "shell"
