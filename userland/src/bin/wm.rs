@@ -39,18 +39,19 @@ use userland::{
     sys_claim_compositor, sys_exit, sys_fb_clear, sys_fb_fill_rect, sys_fb_flush,
     sys_ipc_recv, sys_ipc_send,
     sys_poll_input, sys_spawn, sys_write,
-    sys_surface_commit, sys_surface_destroy,
+    sys_surface_commit, sys_surface_destroy, sys_surface_set_z,
 };
 
 // RDP message type bytes (mirror libs::RwmType repr).
-const RDP_CONNECT:    u8 = 0x50;
-const RDP_GRANT:      u8 = 0x51;
-const RDP_COMMIT:     u8 = 0x52;
-const RDP_RESIZE:     u8 = 0x53;
-const RDP_KEY:        u8 = 0x54;
-const RDP_FOCUS:      u8 = 0x55;
-const RDP_CLOSE:      u8 = 0x56;
-const RDP_DISCONNECT: u8 = 0x57;
+const RDP_CONNECT:      u8 = 0x50;
+const RDP_GRANT:        u8 = 0x51;
+const RDP_COMMIT:       u8 = 0x52;
+const RDP_RESIZE:       u8 = 0x53;
+const RDP_KEY:          u8 = 0x54;
+const RDP_FOCUS:        u8 = 0x55;
+const RDP_CLOSE:        u8 = 0x56;
+const RDP_DISCONNECT:   u8 = 0x57;
+const RDP_PRESENT_DONE: u8 = 0x58;
 
 // ── Theme: Tokyo Night ────────────────────────────────────────────────────────
 
@@ -74,6 +75,8 @@ const SCREEN_W: u32 = 1920;
 const SCREEN_H: u32 = 1080;
 const BAR_H:    u32 = 22;
 const BORDER:   u32 = 2;
+/// Per-window title bar height (inside the window border, above the content area).
+const TITLE_H:  u32 = 14;
 const GAP:      i32 = 6;
 const MAX_WIN:  usize = 16;
 const TAG_CNT:  usize = 9;
@@ -172,6 +175,10 @@ struct Client {
     /// Short display title.
     title: [u8; 20],
     title_len: u8,
+    /// Last content width/height sent to the RDP client (0 = never notified).
+    /// Used to detect geometry changes and send RDP_RESIZE.
+    notified_cw: u32,
+    notified_ch: u32,
 }
 
 impl Client {
@@ -188,6 +195,8 @@ impl Client {
             surface_id: 0,
             title: [0; 20],
             title_len: 0,
+            notified_cw: 0,
+            notified_ch: 0,
         }
     }
 
@@ -816,30 +825,92 @@ fn draw_bar(wm: &Wm) {
 
 // ── RDP compositor helpers ────────────────────────────────────────────────────
 
-/// Send RdpGrant to a client: tells it its geometry.
+/// Compute the content area dimensions for a client (what the RDP app renders into).
+/// Strips away the outer border and per-window title bar.
+#[inline]
+fn content_dims(w: u32, h: u32) -> (u32, u32) {
+    let cw = w.saturating_sub(BORDER * 2);
+    let ch = h.saturating_sub(BORDER * 2 + TITLE_H);
+    (cw, ch)
+}
+
+/// Compute the content area origin for blitting the RDP surface.
+#[inline]
+fn content_origin(x: i32, y: i32) -> (u32, u32) {
+    ((x as u32) + BORDER, (y as u32) + BORDER + TITLE_H)
+}
+
+/// Send RdpGrant to a client with content-area dimensions (not window dims).
 fn send_kdp_grant(client_pid: u32, surface_id: u32, x: i32, y: i32, w: u32, h: u32, title: &[u8]) {
+    let (cw, ch) = content_dims(w, h);
     let mut msg = RwmMsg::ZERO;
     msg.msg_type = RDP_GRANT;
     let kdp = unsafe { &mut msg.payload.rdp };
     kdp.surface_id = surface_id;
-    kdp.x = x;
-    kdp.y = y;
-    kdp.width = w;
-    kdp.height = h;
-    let n = title.len().min(kdp.title.len() - 1);
+    kdp.x     = x;
+    kdp.y     = y;
+    kdp.width  = cw;
+    kdp.height = ch;
+    let n = title.len().min(kdp.title.len().saturating_sub(1));
     kdp.title[..n].copy_from_slice(&title[..n]);
     let _ = sys_ipc_send(client_pid, &msg, 0);
 }
 
-/// Send RdpResize to a client: compositor has relaid out, client should re-render.
+/// Send RdpResize to a client with updated content-area dimensions.
 fn send_kdp_resize(client_pid: u32, surface_id: u32, w: u32, h: u32) {
+    let (cw, ch) = content_dims(w, h);
     let mut msg = RwmMsg::ZERO;
     msg.msg_type = RDP_RESIZE;
     let kdp = unsafe { &mut msg.payload.rdp };
     kdp.surface_id = surface_id;
-    kdp.width = w;
-    kdp.height = h;
+    kdp.width  = cw;
+    kdp.height = ch;
     let _ = sys_ipc_send(client_pid, &msg, 0);
+}
+
+/// Send RdpPresentDone to a client: the frame has been composited; safe to render next.
+fn send_rdp_present_done(client_pid: u32, surface_id: u32, ack_seq: u16) {
+    let mut msg = RwmMsg::ZERO;
+    msg.msg_type = RDP_PRESENT_DONE;
+    msg.seq      = ack_seq;
+    let kdp = unsafe { &mut msg.payload.rdp };
+    kdp.surface_id = surface_id;
+    let _ = sys_ipc_send(client_pid, &msg, 0);
+}
+
+/// After arrange(), send RDP_RESIZE to any client whose content dimensions changed.
+/// Updates `client.notified_cw/ch` so we only send when something actually moved.
+fn notify_layout_changes(wm: &mut Wm) {
+    for i in 0..MAX_WIN {
+        // Extract everything we need before any mutable borrow.
+        let (alive, pid, sid, w, h, nw, nh, tlen) = {
+            let c = &wm.clients[i];
+            (c.alive, c.pid, c.surface_id, c.w, c.h, c.notified_cw, c.notified_ch, c.title_len)
+        };
+        if !alive || pid == 0 || sid == 0 { continue; }
+        let (cw, ch) = content_dims(w, h);
+        if cw != nw || ch != nh {
+            send_kdp_resize(pid, sid, w, h);
+            wm.clients[i].notified_cw = cw;
+            wm.clients[i].notified_ch = ch;
+            cog_log(b"[WM] Pardon me, sir - resizing '");
+            // copy title slice before log to avoid borrow issues
+            let title_copy = wm.clients[i].title;
+            cog_log(&title_copy[..tlen as usize]);
+            cog_log(b"' to fit the new arrangement.\r\n");
+        }
+    }
+}
+
+/// Set z-order on all live RDP surfaces: focused = 255, others ordered by slot.
+fn update_z_order(wm: &Wm) {
+    let focused = wm.focused;
+    for i in 0..MAX_WIN {
+        let c = &wm.clients[i];
+        if !c.alive || c.surface_id == 0 { continue; }
+        let z: u8 = if i == focused { 255 } else { i as u8 };
+        let _ = sys_surface_set_z(c.surface_id, z);
+    }
 }
 
 /// Forward a key event to a focused RDP client.
@@ -878,42 +949,58 @@ fn handle_ipc_msg(wm: &mut Wm, msg: &RwmMsg) -> bool {
 
     match msg.msg_type {
         RDP_CONNECT => {
-            // Client wants a window; it has already created a surface.
             let surface_id = kdp.surface_id;
-            // Extract title from payload.
             let tlen = kdp.title.iter().position(|&b| b == 0).unwrap_or(kdp.title.len());
             let title = &kdp.title[..tlen];
             let idx = wm.add_client(0xFF, title);
-            let c = &mut wm.clients[idx];
-            c.pid = sender;
-            c.surface_id = surface_id;
+            {
+                let c = &mut wm.clients[idx];
+                c.pid        = sender;
+                c.surface_id = surface_id;
+            }
             wm.focused = idx;
-            // Recompute layout so we have the correct geometry.
             wm.arrange();
-            let c = &wm.clients[idx];
-            send_kdp_grant(sender, surface_id, c.x, c.y, c.w, c.h, title);
+            let (cx, cy, cw_full, ch_full) = {
+                let c = &wm.clients[idx];
+                (c.x, c.y, c.w, c.h)
+            };
+            let (cw, ch) = content_dims(cw_full, ch_full);
+            wm.clients[idx].notified_cw = cw;
+            wm.clients[idx].notified_ch = ch;
+            send_kdp_grant(sender, surface_id, cx, cy, cw_full, ch_full, title);
+            update_z_order(wm);
+            cog_log(b"[WM] Good to have you, sir. Window '");
+            cog_log(title);
+            cog_log(b"' has joined the workspace.\r\n");
             true
         }
         RDP_COMMIT => {
-            // Client updated its surface buffer; blit it to the framebuffer.
+            // Client's pixel buffer is ready. Blit at the content area origin
+            // (border + title bar offset) and send PresentDone frame callback.
             let surface_id = kdp.surface_id;
-            // Find the client.
+            let commit_seq = msg.seq;
             for i in 0..MAX_WIN {
                 let c = &wm.clients[i];
                 if c.alive && c.pid == sender && c.surface_id == surface_id {
-                    // Blit at the client's current tile position.
-                    let _ = sys_surface_commit(surface_id, c.x as u32, c.y as u32);
+                    let (ox, oy) = content_origin(c.x, c.y);
+                    let _ = sys_surface_commit(surface_id, ox, oy);
+                    // FIX #3: update z-order so focused client renders on top.
+                    update_z_order(wm);
+                    // FIX #2: send frame callback so client knows it can render next frame.
+                    send_rdp_present_done(sender, surface_id, commit_seq);
                     break;
                 }
             }
-            false // partial blit — full flush done in draw_scene
+            true // trigger chrome redraw so title bar stays crisp
         }
         RDP_DISCONNECT => {
-            // Client is closing; find and remove it.
             let surface_id = kdp.surface_id;
             for i in 0..MAX_WIN {
                 let c = &wm.clients[i];
                 if c.alive && c.pid == sender && c.surface_id == surface_id {
+                    cog_log(b"[WM] Window '");
+                    cog_log(&wm.clients[i].title[..wm.clients[i].title_len as usize]);
+                    cog_log(b"' has taken its leave, sir.\r\n");
                     let _ = sys_surface_destroy(surface_id);
                     wm.remove_client(i);
                     break;
@@ -928,17 +1015,19 @@ fn handle_ipc_msg(wm: &mut Wm, msg: &RwmMsg) -> bool {
 // ── Scene rendering ───────────────────────────────────────────────────────────
 
 fn draw_scene(wm: &mut Wm) {
-    // Recompute layout geometry.
+    // Recompute layout geometry then notify clients of any size changes.
     wm.arrange();
+    notify_layout_changes(wm);
+    // Propagate z-order to display server.
+    update_z_order(wm);
 
-    // Clear desktop.
     let _ = sys_fb_clear(C_BG);
 
     if wm.show_bar {
         draw_bar(wm);
     }
 
-    // Draw all visible clients back-to-front (focused last so it's on top).
+    // Two-pass draw: unfocused first, focused last (paints on top of others).
     let focused = wm.focused;
     for pass in 0..2u8 {
         for i in 0..MAX_WIN {
@@ -949,41 +1038,54 @@ fn draw_scene(wm: &mut Wm) {
             if pass == 0 && is_focused  { continue; }
             if pass == 1 && !is_focused { continue; }
 
-            // In monocle, draw all at full area but only focused is meaningfully visible.
             let (x, y, w, h) = (c.x, c.y, c.w, c.h);
             if w == 0 || h == 0 { continue; }
 
-            let fill   = if is_focused { C_WIN_ACT  } else { C_WIN_BG };
-            let border = if is_focused { C_BORDER_ACT } else { C_BORDER_IN };
+            let border_col   = if is_focused { C_BORDER_ACT } else { C_BORDER_IN };
+            let titlebar_col = if is_focused { C_BORDER_ACT } else { 0xFF_1E_20_30 };
+            let content_col  = if is_focused { C_WIN_ACT    } else { C_WIN_BG };
 
-            // Outer border.
-            let _ = sys_fb_fill_rect(x as u32, y as u32, w, h, border);
-            // Inner fill.
-            if w > BORDER * 2 && h > BORDER * 2 {
-                let _ = sys_fb_fill_rect(
-                    (x as u32) + BORDER,
-                    (y as u32) + BORDER,
-                    w - BORDER * 2,
-                    h - BORDER * 2,
-                    fill,
-                );
+            // ── 1. Outer border ──────────────────────────────────────────
+            let _ = sys_fb_fill_rect(x as u32, y as u32, w, h, border_col);
+
+            if w <= BORDER * 2 || h <= BORDER * 2 { continue; }
+            let inner_x = x as u32 + BORDER;
+            let inner_y = y as u32 + BORDER;
+            let inner_w = w - BORDER * 2;
+            let inner_h = h - BORDER * 2;
+
+            // ── 2. Per-window title bar (FIX #6) ────────────────────────
+            let tb_h = TITLE_H.min(inner_h);
+            let _ = sys_fb_fill_rect(inner_x, inner_y, inner_w, tb_h, titlebar_col);
+
+            // Title text centred in the title bar.
+            if tb_h >= FONT_H {
+                let ts = &c.title[..c.title_len as usize];
+                let tw = ts.len() as u32 * (FONT_W + 1);
+                let tx = if inner_w > tw { inner_x + (inner_w - tw) / 2 } else { inner_x + 2 };
+                let ty = inner_y + (tb_h - FONT_H) / 2;
+                let fg = if is_focused { 0xFF_FF_FF_FF } else { C_TAG_OCC };
+                draw_text(tx, ty, ts, fg);
             }
 
-            // Blit RDP surface if client has rendered content; otherwise draw placeholder.
-            if c.surface_id != 0 && w > BORDER * 2 && h > BORDER * 2 {
-                // surface_commit blits the client's pixel buffer at the content area.
-                let _ = sys_surface_commit(
-                    c.surface_id,
-                    (x as u32) + BORDER,
-                    (y as u32) + BORDER,
-                );
-            } else if w > BORDER * 2 + 8 && h > BORDER * 2 + 8 {
-                draw_window_content(wm, i, is_focused);
-            }
-
-            // Floating indicator: orange top-left corner mark.
+            // Floating indicator in title bar (orange pill).
             if c.floating {
-                let _ = sys_fb_fill_rect(x as u32 + BORDER, y as u32 + BORDER, 8, 3, C_FLOAT_MARK);
+                let _ = sys_fb_fill_rect(inner_x + 2, inner_y + (tb_h - 3) / 2, 8, 3, C_FLOAT_MARK);
+            }
+
+            // ── 3. Content area fill ─────────────────────────────────────
+            if inner_h > tb_h {
+                let cy = inner_y + tb_h;
+                let ch = inner_h - tb_h;
+                let _ = sys_fb_fill_rect(inner_x, cy, inner_w, ch, content_col);
+
+                // ── 4. RDP surface blit or placeholder ───────────────────
+                if c.surface_id != 0 {
+                    // Blit client's rendered pixels at the content area origin (FIX #3 + #5).
+                    let _ = sys_surface_commit(c.surface_id, inner_x, cy);
+                } else if inner_w > 8 && ch > 8 {
+                    draw_window_content(wm, i, is_focused);
+                }
             }
         }
     }
@@ -1173,7 +1275,7 @@ fn handle_key(wm: &mut Wm, key: u8, pressed: bool) -> bool {
             }
             // Quit / reboot.
             KEY_Q => {
-                log(b"[WM] reboot\r\n");
+                cog_log(b"[Cogman] Reboot requested, sir. Tidying up and restarting presently.\r\n");
                 let _ = userland::sys_reboot(1);
                 sys_exit(0);
             }
@@ -1196,15 +1298,16 @@ fn handle_key(wm: &mut Wm, key: u8, pressed: bool) -> bool {
 
 #[no_mangle]
 fn _start() -> ! {
-    log(b"[WM] rogueos-wm starting (RDP compositor)\r\n");
+    cog_log(b"\r\n[Cogman] RogueOS window manager reporting for duty, sir.\r\n");
+    cog_log(b"[Cogman] Claiming compositor authority. One moment, please.\r\n");
 
-    // Claim compositor authority — this PID is now the only one that may
-    // call sys_surface_commit. Clients call sys_get_compositor_pid() to find us.
     let claim_r = sys_claim_compositor();
     if claim_r < 0 {
-        log(b"[WM] WARNING: could not claim compositor (another WM running?)\r\n");
+        cog_log(b"[Cogman] I'm afraid compositor authority is already held, sir. \
+                  Another WM may be running. Proceeding regardless.\r\n");
     } else {
-        log(b"[WM] compositor authority claimed\r\n");
+        cog_log(b"[Cogman] Compositor authority secured. \
+                  I am now the sole arbiter of what reaches the screen, sir.\r\n");
     }
 
     let mut wm = Wm::new();
@@ -1215,7 +1318,7 @@ fn _start() -> ! {
     wm.focused = idx;
 
     draw_scene(&mut wm);
-    log(b"[WM] initial draw done\r\n");
+    cog_log(b"[Cogman] Initial scene rendered, sir. Your workspace is ready.\r\n");
 
     let mut ev = KeyEvent { keycode: 0, pressed: false };
     let mut ipc_msg = RwmMsg::ZERO;
@@ -1255,13 +1358,18 @@ fn _start() -> ! {
             wm.dirty = false;
         }
 
-        // Periodic serial heartbeat.
+        // Periodic serial heartbeat (every ~200k ticks).
         if idle_ticks % 200_000 == 0 {
-            log(b"[WM] idle\r\n");
+            cog_log(b"[Cogman] All quiet on the desktop, sir.\r\n");
         }
     }
 }
 
-fn log(msg: &[u8]) {
+/// Serial output — used for all Cogman-persona WM messages.
+fn cog_log(msg: &[u8]) {
     let _ = sys_write(1, msg.as_ptr(), msg.len());
 }
+
+/// Legacy alias kept so internal call-sites compile without mass rename.
+#[allow(dead_code)]
+fn log(msg: &[u8]) { cog_log(msg); }

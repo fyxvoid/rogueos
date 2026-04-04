@@ -284,6 +284,89 @@ See [ROADMAP.md](ROADMAP.md) for the full 10-phase development plan covering SMP
 
 ---
 
+## Vision & Evolution Blueprint
+
+### Executive Vision
+
+RogueOS exists to be the final operating system a developer, pentester, or power user ever needs. It is a clean-room, 100% Rust, capability-first OS that treats memory protection, process isolation, and reliability as non-negotiable hardware-enforced invariants — exactly what Multics promised in 1969 but could never fully deliver because it was written in PL/I on 36-bit hardware. RogueOS finishes what Multics started, but in 2026-era Rust on x86_64: zero ambient authority, spawn-only processes, typed IPC, Cogman as immortal PID 1, and a surgical Rust-native dwm clone called roguewm as the only desktop environment. The entire system is engineered for extreme focus, auditability, and raw speed.
+
+---
+
+### Core Dominance Pillars
+
+#### Process Model
+- **Current:** Spawn-only processes with basic Cogman supervision.
+- **Peak target:** Every process is a sealed capability container. No `fork()`, only `SYS_SPAWN` with an explicit capability mask. Processes have no ambient authority whatsoever — they can only do what their capability tokens explicitly allow. Cogman is the only process allowed to grant/revoke capabilities and can restart any service in < 5 ms with zero data loss (journaled state).
+- **Domination:** Linux fork/exec is fundamentally broken for security; Windows job objects are coarse; seL4 is correct but unusable. RogueOS makes every process as isolated as a VM but with zero overhead and full Rust type safety.
+
+#### Memory Management
+- **Current:** Global buddy allocator + basic paging.
+- **Peak target:** Per-process page tables with strict user/kernel split. Every allocation is backed by a capability. Guard pages everywhere. On any page fault the offending process is instantly terminated (Multics-style fail-fast). SME + SMAP + KPTI-style kernel mappings + optional AMD memory encryption for all user pages. Single-level-store semantics via capability-mapped objects — no "files" vs "memory" distinction at the kernel level.
+- **Domination:** No other OS gives you Multics rings + Rust borrow-checker + sub-page capabilities in one package.
+
+#### Security Model
+- **Current:** Basic rings via paging.
+- **Peak target:** Pure capability system (`u128` unforgeable tokens with embedded rights bitmap). `SYS_CAP_GRANT`, `SYS_CAP_REVOKE`, `SYS_SANDBOX(policy)`. File descriptors, IPC ports, surfaces, network sockets — everything is a capability. No UID/GID, no sudo, no setuid. Kernel itself runs with the minimal capability set possible.
+- **Domination:** More secure than seL4 (because Rust eliminates entire classes of bugs) and more usable than any capability OS ever shipped.
+
+#### Reliability / Supervision
+- **Current:** Cogman as PID 1.
+- **Peak target:** Cogman is immortal. Every service declares its dependencies and recovery policy in a declarative manifest. On crash, Cogman replays the journal and restarts the exact dependency graph. Kernel never panics — it only kills the offending process. Watchdog + triple modular redundancy for critical kernel paths where possible.
+- **Domination:** The system literally cannot be crashed by user code. Ever.
+
+#### Performance
+- **Current:** EEVDF scheduler.
+- **Peak target:** Per-CPU EEVDF with work-stealing, NUMA-aware, latency-prioritised for interactive tasks. Zero-copy IPC, zero-copy surface mapping to GPU, lock-free everything possible.
+- **Domination:** Faster than Linux on the workloads that matter to power users.
+
+#### Storage
+- **Current:** SimpleFS on NVMe (polling).
+- **Peak target:** RogueFS — log-structured, checksummed (BLAKE3), capability-addressed, crash-consistent, copy-on-write. Single-level store: files are just capability-mapped regions.
+- **Domination:** Faster and safer than ZFS + btrfs combined, with zero syscall tax.
+
+#### Networking
+- **Peak target:** Full TCP/IP + QUIC + TLS 1.3 in-kernel (Rust), capability-controlled sockets, sandboxed network namespaces by default.
+- **Domination:** No more userland network stack compromises.
+
+---
+
+### Desktop & User Experience — roguewm
+
+roguewm is the only allowed desktop environment. Philosophy: *"If it needs a mouse for normal use, it is broken."*
+
+**Implementation:** 100% Rust, zero dependencies, ~3k LOC target. Uses the kernel compositor directly via surface capabilities.
+
+**Features (deliberately minimal):**
+
+- 9 tags (workspaces) with dynamic tiling — master-stack, grid, monocle
+- Keyboard-only operation (exactly like dwm: `MOD+1-9`, `MOD+Enter` spawns terminal, `MOD+Shift+c` kills client, `MOD+Space` toggles monocle, etc.)
+- No title bars by default — tiny border only, colour-coded by capability level or process group
+- No animations, no blur, no transparency — nothing that costs latency
+- Perfect integration with Cogman: every window has a capability handle; roguewm can ask Cogman to restart a crashed client instantly
+- Global keybindings for pentesting tools — one key to spawn burp, gdb, wireshark-in-sandbox, etc.
+- Status bar is a tiny, scriptable IPC client that shows only what you tell it: CPU, memory pressure, active capabilities, audit log summary
+
+This is not for "enjoying" the OS. It is for shipping code, finding bugs, and owning the machine at 200 WPM. Casual users can use it later via optional "simple mode" overlays — never the other way around.
+
+---
+
+### Phased Evolution Roadmap
+
+| Phase | Name | Difficulty | Goal |
+|-------|------|-----------|------|
+| 1 | Memory | Hard | Per-process page tables, guard pages, `#PF` → kill process, `SYS_MMAP`/`MUNMAP` |
+| 2 | Capability Kernel | Hard | `u128` capability tokens, grant/revoke, `SYS_SANDBOX`, capability-mapped objects |
+| 3 | Storage Revolution | Medium | RogueFS + full NVMe MSI-X + journaled single-level store |
+| 4 | roguewm | Medium | Full Rust dwm clone with kernel surface protocol v2 |
+| 5 | SMP & Scheduler God Mode | Hard | Per-CPU runqueues, work-stealing, NUMA |
+| 6 | Networking & Sandboxed Services | Medium | TCP/QUIC + capability sockets |
+| 7 | Toolchain & Package System | Low | rogue-pkg + reproducible `.kpkg` + official dev/pentest tool repository |
+| 8 | Formal Verification Layer | Hard | Rust + Prusti + seL4-style invariants for critical paths |
+| 9 | Self-hosting & Dogfooding | Low | Compile RogueOS on RogueOS, daily driver for kernel team |
+| 10 | Audit & Release | Low | Public capability audit, reproducible builds, "RogueOS 1.0 — Untouchable" |
+
+---
+
 ## Licence
 
 RogueOS is **free for individuals, students, researchers, non-profits, and

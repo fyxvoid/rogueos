@@ -20,6 +20,7 @@ use libs::{
     SYS_READ, SYS_REBOOT, SYS_SCREEN_SIZE, SYS_SPAWN,
     SYS_CLAIM_COMPOSITOR, SYS_COMPOSITE_ALL, SYS_GET_COMPOSITOR_PID,
     SYS_SURFACE_ATTACH, SYS_SURFACE_COMMIT, SYS_SURFACE_CREATE, SYS_SURFACE_DESTROY,
+    SYS_SURFACE_SET_Z, SYS_SHM_CREATE, SYS_SHM_DESTROY,
     SYS_UNLINK, SYS_WAITPID, SYS_WRITE,
     // Debug / perf / scheduler
     SYS_HW_BP_SET, SYS_HW_BP_CLEAR, SYS_HW_BP_QUERY,
@@ -114,6 +115,12 @@ pub extern "C" fn syscall_dispatch(
             gfx::sys_composite_all(), |v| v, |e| e.0),
         SYS_GET_COMPOSITOR_PID => user_ptr::result_to_rax(
             gfx::sys_get_compositor_pid(), |v| v, |e| e.0),
+        SYS_SURFACE_SET_Z => user_ptr::result_to_rax(
+            gfx::sys_surface_set_z(a1 as u32, a2 as u8), |v| v, |e| e.0),
+        SYS_SHM_CREATE => user_ptr::result_to_rax(
+            gfx::sys_shm_create(a1), |v| v, |e| e.0),
+        SYS_SHM_DESTROY => user_ptr::result_to_rax(
+            gfx::sys_shm_destroy(a1 as u32), |v| v, |e| e.0),
 
         // ── IPC protocol ─────────────────────────────────────────────────
         SYS_IPC_SEND => user_ptr::result_to_rax(

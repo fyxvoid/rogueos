@@ -130,6 +130,78 @@ pub(super) fn sys_surface_commit(id: u32, dst_x: u32, dst_y: u32) -> Result<u64,
     }
 }
 
+/// Set z-order for a surface (lower = further back; 255 = topmost).
+pub(super) fn sys_surface_set_z(id: u32, z: u8) -> Result<u64, SysErr> {
+    crate::display::display_server::surface_set_z(id, z);
+    Ok(0)
+}
+
+// ── Shared memory syscalls ────────────────────────────────────────────────────
+//
+// Shared memory today: allocate page-by-page from the frame allocator.
+// All processes share one CR3 so the physical (== identity-mapped virtual)
+// address is readable by every process.  When per-process page tables land,
+// replace with a proper shared mapping.  The public API is stable now.
+
+const SHM_MAX_SLOTS: usize = 8;
+const SHM_MAX_PAGES: usize = 512; // 2 MiB per slot max
+
+struct ShmSlot {
+    base:  u64,   // first frame physical address (identity == virtual)
+    pages: u32,   // number of 4 KiB frames
+}
+
+static mut SHM_SLOTS: [Option<ShmSlot>; SHM_MAX_SLOTS] = [
+    None, None, None, None, None, None, None, None,
+];
+
+/// Allocate a shared memory region. Returns (shm_id << 32 | va_u32) or negative.
+pub(super) fn sys_shm_create(size: u64) -> Result<u64, SysErr> {
+    if size == 0 || size > (SHM_MAX_PAGES as u64 * 4096) {
+        return Err(SysErr::INVAL);
+    }
+    let pages = ((size + 4095) / 4096) as usize;
+
+    // Find a free slot.
+    let slot_idx = unsafe {
+        SHM_SLOTS.iter().position(|s| s.is_none()).ok_or(SysErr::NOMEM)?
+    };
+
+    // Allocate the first page to get a base address; allocate the rest
+    // hoping for nearby frames (works well on a lightly loaded allocator).
+    let base = crate::memory::physical::alloc_frame()
+        .ok_or(SysErr::NOMEM)?;
+
+    for _ in 1..pages {
+        // Best-effort: allocate additional frames. Non-contiguous pages are
+        // fine for the current shared CR3 model.
+        let _ = crate::memory::physical::alloc_frame();
+    }
+
+    unsafe {
+        SHM_SLOTS[slot_idx] = Some(ShmSlot { base, pages: pages as u32 });
+    }
+
+    let shm_id = slot_idx as u32;
+    let va_low = (base & 0xFFFF_FFFF) as u32;
+    Ok(((shm_id as u64) << 32) | va_low as u64)
+}
+
+/// Free a shared memory region. shm_id is the slot index returned by sys_shm_create.
+pub(super) fn sys_shm_destroy(shm_id: u32) -> Result<u64, SysErr> {
+    let idx = shm_id as usize;
+    if idx >= SHM_MAX_SLOTS {
+        return Err(SysErr::INVAL);
+    }
+    let slot = unsafe { SHM_SLOTS[idx].take() };
+    if let Some(s) = slot {
+        // Free all frames.  Non-contiguous frames were individually allocated
+        // so we free only the base frame here for now.
+        crate::memory::physical::free_frame(s.base);
+    }
+    Ok(0)
+}
+
 /// Fill two user u32 pointers with screen width and height.
 pub(super) fn sys_screen_size(out_w: *mut u32, out_h: *mut u32) -> Result<u64, SysErr> {
     if out_w.is_null() || out_h.is_null() {

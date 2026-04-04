@@ -48,6 +48,12 @@ pub const SYS_CLAIM_COMPOSITOR: u64 = 0x216;
 pub const SYS_COMPOSITE_ALL: u64 = 0x217;
 /// Get the PID of the registered compositor. Returns pid on success, -ENOENT if none registered.
 pub const SYS_GET_COMPOSITOR_PID: u64 = 0x218;
+/// Set z-order for a surface. Args: surface_id (u32), z (u8 — lower = further back). Returns 0 or negative.
+pub const SYS_SURFACE_SET_Z: u64 = 0x219;
+/// Create a shared memory region. Args: size (u64 bytes). Returns (shm_id << 32 | va_low32) packed, or negative.
+pub const SYS_SHM_CREATE: u64 = 0x21A;
+/// Destroy a shared memory region. Args: shm_id (u32). Returns 0 or negative.
+pub const SYS_SHM_DESTROY: u64 = 0x21B;
 
 /// IPC syscalls (namespace 0x320).
 /// Send a RwmMsg to target process. Args: target_pid (u32), msg_ptr (*const RwmMsg), flags (u32).
@@ -156,6 +162,9 @@ pub enum RwmType {
     RdpClose      = 0x56,
     /// Client → compositor: window is closing. Carries PayloadRdp (surface_id).
     RdpDisconnect = 0x57,
+    /// Compositor → client: frame has been presented; client may submit the next buffer.
+    /// seq mirrors the RdpCommit seq this acknowledges. Carries PayloadRdp (surface_id).
+    RdpPresentDone = 0x58,
 }
 
 // ── KWM payload structs (each exactly 56 bytes) ───────────────────────────
@@ -370,6 +379,10 @@ impl RwmMsg {
         sender_pid: 0,
         payload:    RwmPayload { raw: PayloadRaw { data: [0u8; 56] } },
     };
+
+    /// Alias for ZERO — more readable when used as a receive buffer.
+    #[inline]
+    pub fn zeroed() -> Self { Self::ZERO }
 }
 
 const _: () = assert!(core::mem::size_of::<RwmMsg>() == 64);

@@ -95,7 +95,7 @@ pub fn say_reboot() {
 }
 
 pub fn say_waitpid_error() {
-    speak(b"[Cogman] Beg pardon — waitpid returned an error. Carrying on.\r\n");
+    speak(b"[Cogman] Beg pardon - waitpid returned an error. Carrying on.\r\n");
 }
 
 // ── Advisor events ────────────────────────────────────────────────────────
@@ -112,7 +112,7 @@ pub fn say_advisor_local_only() {
 
 pub fn say_advisor_cloud_available() {
     speak(b"[Cogman] Cloud inference is available. I'll ask locally first, \
-             cloud as a fallback — with your permission.\r\n");
+             cloud as a fallback - with your permission.\r\n");
 }
 
 pub fn say_advisor_privacy_strip() {
@@ -131,6 +131,7 @@ pub fn say_ipc_unknown(ty: u8) {
     let hi = ty >> 4;
     let lo = ty & 0x0f;
     let nibble = |n: u8| if n < 10 { b'0' + n } else { b'a' + n - 10 };
-    let _ = sys_write(1, &[nibble(hi), nibble(lo)], 2);
+    let buf = [nibble(hi), nibble(lo)];
+    let _ = sys_write(1, buf.as_ptr(), 2);
     speak(b"). Ignoring it.\r\n");
 }

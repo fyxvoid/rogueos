@@ -23,8 +23,8 @@ mod advisor;
 mod persona;
 mod supervisor;
 
-use userland::{sys_ipc_recv, IPC_NONBLOCK};
-use libs::{RwmMsg, RwmType};
+use userland::sys_ipc_recv;
+use libs::{IPC_NONBLOCK, RwmMsg};
 use supervisor::{default_supervisor, Supervisor};
 
 // ── IPC message types for Cogman control ─────────────────────────────────
@@ -53,7 +53,7 @@ fn pause_spin() {
 // ── IPC handling ──────────────────────────────────────────────────────────
 
 fn handle_ipc(sv: &mut Supervisor, msg: &RwmMsg) {
-    let ty = msg.ty as u8;
+    let ty = msg.msg_type;
     match ty {
         COG_CTRL_LIST => {
             persona::speak(b"[Cogman] Service table:\r\n");
@@ -84,8 +84,8 @@ fn handle_ipc(sv: &mut Supervisor, msg: &RwmMsg) {
             // Extract the query text from the IPC payload.
             // Payload bytes 0..55 are the query string (NUL-terminated).
             let payload = unsafe { &msg.payload.raw };
-            let query_len = payload.iter().position(|&b| b == 0).unwrap_or(55);
-            let query_text = &payload[..query_len];
+            let query_len = payload.data.iter().position(|&b| b == 0).unwrap_or(55);
+            let query_text = &payload.data[..query_len];
 
             let ctx = advisor::QueryContext {
                 pentest_mode: false,
@@ -105,10 +105,12 @@ fn handle_ipc(sv: &mut Supervisor, msg: &RwmMsg) {
         COG_CTRL_STOP => {
             // Payload[0..3] = target program_id (LE u32)
             let payload = unsafe { &msg.payload.raw };
-            let prog_id = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+            let prog_id = u32::from_le_bytes([
+                payload.data[0], payload.data[1], payload.data[2], payload.data[3],
+            ]);
             persona::speak(b"[Cogman] Stopping service with program_id=");
             persona::speak_u32(prog_id);
-            persona::speak(b" (not yet implemented — coming presently).\r\n");
+            persona::speak(b" (not yet implemented - coming presently).\r\n");
         }
 
         _ => {
@@ -144,7 +146,7 @@ fn _start() -> ! {
         // Drain the IPC inbox (non-blocking).
         loop {
             let mut msg = RwmMsg::zeroed();
-            let ret = sys_ipc_recv(&mut msg as *mut RwmMsg, IPC_NONBLOCK);
+            let ret = sys_ipc_recv(&mut msg, IPC_NONBLOCK);
             if ret < 0 {
                 break; // EAGAIN — inbox empty
             }

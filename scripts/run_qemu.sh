@@ -32,7 +32,7 @@ fi
 
 OVMF="${OVMF_CODE:-}"
 if [ -z "$OVMF" ]; then
-  for p in /usr/share/edk2/x64/OVMF_CODE.4m.fd /usr/share/edk2/ovmf/x64/OVMF_CODE.fd /usr/share/OVMF/OVMF_CODE.fd; do
+  for p in /usr/share/edk2/x64/OVMF_CODE.4m.fd /usr/share/edk2/ovmf/x64/OVMF_CODE.fd /usr/share/OVMF/OVMF_CODE.fd /usr/share/OVMF/OVMF_CODE_4M.fd; do
     [ -f "$p" ] && OVMF="$p" && break
   done
 fi

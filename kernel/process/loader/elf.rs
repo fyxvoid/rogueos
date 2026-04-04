@@ -147,7 +147,7 @@ pub fn load_elf(elf_data: &[u8], cr3: u64) -> Option<LoadResult> {
             let dest_offset = (p_vaddr - va) as usize;
 
             // Backing page must be a physical frame (for PTE); PT_POOL is for table pages only. Use buddy allocator.
-            let (pa, _need_map, existing_pte) = match paging::walk_pte(cr3, va) {
+            let (pa, _need_map, _existing_pte) = match paging::walk_pte(cr3, va) {
                 Some(pte) => (pte & FRAME_MASK, false, Some(pte)),
                 None => {
                     let Some(pa) = physical::alloc_frame() else {
@@ -175,10 +175,10 @@ pub fn load_elf(elf_data: &[u8], cr3: u64) -> Option<LoadResult> {
                 }
             }
 
-            let map_flags = match existing_pte {
-                Some(pte) => (pte & 0xFFF) | flags,
-                None => flags,
-            };
+            // Always use the ELF segment flags directly. Do not OR with existing PTE
+            // flags: the kernel identity map at the same VA has Writable=1, and ORing
+            // would make user text segments writable, failing the post-load check.
+            let map_flags = flags;
             if !virt::map_page_in_space(cr3, va, pa, map_flags) {
                 serial::write_str("[KRN] load_elf: map_page_in_space_failed\r\n");
                 return None;

@@ -1,4 +1,18 @@
 //! Global Descriptor Table. Kernel and user (ring 3) code/data, plus TSS for kernel stack.
+//!
+//! GDT layout (indices):
+//!   [0] null      0x00
+//!   [1] kern code 0x08  KERNEL_CS
+//!   [2] kern data 0x10  KERNEL_DS
+//!   [3] user data 0x18  USER_SS  ← data BEFORE code so STAR[63:48]=0x10 gives correct SYSRET selectors
+//!   [4] user code 0x20  USER_CS
+//!   [5] TSS low   0x28
+//!   [6] TSS high  0x30
+//!
+//! Descriptor u64 byte layout (little-endian): byte[5]=access, byte[6]=flags+limit_hi.
+//!   access byte sits at bits 47:40, flags+limit at bits 55:48 of the u64.
+//!   Wrong encoding (original): 0x00_9a_20_… → byte[5]=0x20 (P=0, wrong type), byte[6]=0x9a
+//!   Correct encoding: 0x00_20_9a_… → byte[5]=0x9a (P=1,DPL=0,code), byte[6]=0x20 (L=1)
 
 use core::arch::asm;
 
@@ -11,10 +25,10 @@ static mut GDT: [u64; 7] = [0; 7];
 pub const KERNEL_CS: u16 = 0x08;
 /// Kernel data selector (index 2).
 pub const KERNEL_DS: u16 = 0x10;
-/// User code selector (index 3, DPL 3).
-pub const USER_CS: u16 = 0x18;
-/// User data selector (index 4, DPL 3).
-pub const USER_SS: u16 = 0x20;
+/// User data selector (index 3, DPL 3). Placed before user code for correct SYSRET (STAR[63:48]+8).
+pub const USER_SS: u16 = 0x18;
+/// User code selector (index 4, DPL 3). SYSRET loads CS = STAR[63:48]+16 = 0x10+16 = 0x20.
+pub const USER_CS: u16 = 0x20;
 
 #[repr(C, packed)]
 struct DescriptorPtr {
@@ -27,11 +41,13 @@ pub fn init() {
         let tss_addr = tss::tss_address();
         let limit = 0x67u64; // 64-bit TSS size - 1
         GDT[0] = 0;
-        GDT[1] = 0x00_9a_20_00_00_00_00_00; // kernel code
-        // Data segments must NOT have the 64-bit "L" bit set (that bit is for code segments).
-        GDT[2] = 0x00_92_00_00_00_00_00_00; // kernel data
-        GDT[3] = 0x00_fa_20_00_00_00_00_00; // user code (DPL 3)
-        GDT[4] = 0x00_f2_00_00_00_00_00_00; // user data (DPL 3)
+        // Byte[5]=access (bits 47:40), byte[6]=flags+limit_hi (bits 55:48).
+        // Code: access=0x9A/0xFA (P,DPL,S=1,Type=exec/read), flags=0x20 (L=1,64-bit).
+        // Data: access=0x92/0xF2 (P,DPL,S=1,Type=rw),       flags=0x00 (D=0,limit ignored in 64-bit).
+        GDT[1] = 0x00_20_9a_00_00_00_00_00; // kernel code  (P=1,DPL=0,S=1,Type=A,L=1)
+        GDT[2] = 0x00_00_92_00_00_00_00_00; // kernel data  (P=1,DPL=0,S=1,Type=2)
+        GDT[3] = 0x00_00_f2_00_00_00_00_00; // user data    (P=1,DPL=3,S=1,Type=2)  ← USER_SS=0x18
+        GDT[4] = 0x00_20_fa_00_00_00_00_00; // user code    (P=1,DPL=3,S=1,Type=A,L=1) ← USER_CS=0x20
         // 64-bit TSS descriptor (two 8-byte entries)
         GDT[5] = limit | (tss_addr & 0xFFFFFF) << 16 | 0x89 << 40 | ((tss_addr >> 24) & 0xFF) << 56;
         GDT[6] = tss_addr >> 32;

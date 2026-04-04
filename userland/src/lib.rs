@@ -17,6 +17,7 @@ use libs::{
     SYS_LIST_ROOT, SYS_LSEEK, SYS_OPEN, SYS_POLL_INPUT, SYS_READ, SYS_REBOOT,
     SYS_SCREEN_SIZE, SYS_SPAWN,
     SYS_SURFACE_ATTACH, SYS_SURFACE_COMMIT, SYS_SURFACE_CREATE, SYS_SURFACE_DESTROY,
+    SYS_SURFACE_SET_Z, SYS_SHM_CREATE, SYS_SHM_DESTROY,
     SYS_UNLINK, SYS_WAITPID, SYS_WRITE,
 };
 
@@ -496,6 +497,57 @@ pub fn sys_composite_all() -> isize {
         core::arch::asm!(
             "syscall",
             in("rax") SYS_COMPOSITE_ALL,
+            lateout("rax") ret,
+            options(nostack, preserves_flags)
+        );
+    }
+    ret
+}
+
+/// Set the z-order for a surface (lower = further back; 255 = topmost).
+#[inline(always)]
+pub fn sys_surface_set_z(id: u32, z: u8) -> isize {
+    let ret: isize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_SURFACE_SET_Z,
+            in("rdi") id as u64,
+            in("rsi") z as u64,
+            lateout("rax") ret,
+            options(nostack, preserves_flags)
+        );
+    }
+    ret
+}
+
+/// Create a shared memory region of `size` bytes.
+/// Returns packed (shm_id << 32 | va_u32) as isize, or negative errno.
+/// Decode: `shm_id = (ret as u64 >> 32) as u32`, `ptr = (ret as u64 & 0xFFFF_FFFF) as *mut u8`.
+#[inline(always)]
+pub fn sys_shm_create(size: usize) -> isize {
+    let ret: isize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_SHM_CREATE,
+            in("rdi") size as u64,
+            lateout("rax") ret,
+            options(nostack, preserves_flags)
+        );
+    }
+    ret
+}
+
+/// Destroy a shared memory region by shm_id.
+#[inline(always)]
+pub fn sys_shm_destroy(shm_id: u32) -> isize {
+    let ret: isize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_SHM_DESTROY,
+            in("rdi") shm_id as u64,
             lateout("rax") ret,
             options(nostack, preserves_flags)
         );

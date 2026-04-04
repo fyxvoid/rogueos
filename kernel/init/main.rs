@@ -68,7 +68,17 @@ pub extern "sysv64" fn kernel_main(bootinfo: *const libs::BootInfo) -> ! {
         }
     }
 
-    let bi = unsafe { &*bootinfo };
+    // Copy BootInfo to a kernel static BEFORE switching CR3. The bootloader places
+    // BootInfo at BOOTINFO_PHYS_ADDR (0x8000) which is outside the kernel identity map
+    // (0x100000+). After paging::init() switches CR3, 0x8000 is no longer mapped.
+    // Keeping a kernel-space copy lets us pass `bi` to drivers after the switch.
+    static mut BOOT_INFO_COPY: libs::BootInfo = unsafe {
+        core::mem::zeroed()
+    };
+    let bi: &libs::BootInfo = unsafe {
+        BOOT_INFO_COPY = *bootinfo;
+        &BOOT_INFO_COPY
+    };
 
     crate::arch::serial::write_str("[KRN] mem_map_valid=");
     crate::arch::serial::write_hex(bi.mem_map_valid as u64);
@@ -88,6 +98,7 @@ pub extern "sysv64" fn kernel_main(bootinfo: *const libs::BootInfo) -> ! {
     }
 
     // Paging init: identity-map frame region so alloc_frame-backed mappings are accessible.
+    // bi is now a reference into BOOT_INFO_COPY (kernel BSS, identity-mapped) — safe after CR3 switch.
     crate::memory::paging::init();
     crate::arch::serial::write_str("[KRN] paging_init_done\r\n");
 

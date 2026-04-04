@@ -224,8 +224,10 @@ pub fn run_first_process(process_index: usize) -> ! {
     crate::arch::serial::write_str(" USER_STACK_TOP-PAGE=");
     crate::arch::serial::write_hex(USER_STACK_TOP.saturating_sub(PAGE_SIZE as u64));
     crate::arch::serial::write_str("\r\n");
-    if frame.rsp >= USER_STACK_TOP {
-        crate::arch::serial::write_str("[run] rsp >= USER_STACK_TOP\r\n");
+    // RSP == USER_STACK_TOP is valid: setup_user_stack() returns exactly USER_STACK_TOP
+    // as the initial stack pointer (top of the allocated stack, grows downward on first push).
+    if frame.rsp > USER_STACK_TOP {
+        crate::arch::serial::write_str("[run] rsp > USER_STACK_TOP\r\n");
         crate::kernel::diagnostic::diagnostic_halt("user_rsp_invalid");
     }
     if (frame.rsp % 16) != 0 {
@@ -279,16 +281,7 @@ pub fn run_first_process(process_index: usize) -> ! {
             }
             crate::arch::serial::write_str("\r\n");
         }
-        paging::debug_walk_in_space(cr3, 0xa0002);
-        unsafe {
-            let ptr = 0xa0002usize as *const u8;
-            crate::arch::serial::write_str("[run] bytes at 0xa0002: ");
-            for i in 0..16 {
-                crate::arch::serial::write_hex(*ptr.add(i) as u64);
-                crate::arch::serial::write_str(" ");
-            }
-            crate::arch::serial::write_str("\r\n");
-        }
+        // 0xa0002 debug removed: address is below identity map (0x100000) and causes #PF.
     }
 
     // SAFETY: enter_user expects valid frame, cr3, kernel_stack from the process we are running.
