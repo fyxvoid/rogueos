@@ -1,0 +1,63 @@
+[package]
+name = "userland"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal Rust userland: init, shell, syscall wrappers (no_std)"
+
+[[bin]]
+name = "init"
+path = "src/bin/init.rs"
+
+[[bin]]
+name = "cogman"
+path = "src/bin/cogman.rs"
+
+[[bin]]
+name = "shell"
+path = "src/bin/shell.rs"
+
+[[bin]]
+name = "wm"
+path = "src/bin/wm.rs"
+
+[[bin]]
+name = "editor"
+path = "src/bin/editor.rs"
+
+[[bin]]
+name = "viewer"
+path = "src/bin/viewer.rs"
+
+[[bin]]
+name = "copy"
+path = "src/bin/copy.rs"
+
+[[bin]]
+name = "monitor"
+path = "src/bin/monitor.rs"
+
+[[bin]]
+name = "shutdown"
+path = "src/bin/shutdown.rs"
+
+[[bin]]
+name = "exit"
+path = "src/bin/exit.rs"
+
+[[bin]]
+name = "session"
+path = "src/bin/session.rs"
+
+[[bin]]
+name = "rwm"
+path = "src/bin/rwm.rs"
+
+[dependencies]
+libs = { path = "../lib" }
+userland-core = { path = "core" }
+userland-server = { path = "server" }
+userland-compositor = { path = "compositor" }
+userland-wm = { path = "wm" }
+userland-utils = { path = "utils" }
+rwm-core = { path = "rwm-core" }
+

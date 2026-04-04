@@ -1,0 +1,10 @@
+[package]
+name = "userland-server"
+version = "0.1.0"
+edition = "2021"
+description = "Display server abstraction: connect, attach, commit via DisplayBackend"
+
+[lib]
+
+[dependencies]
+userland-core = { path = "../core" }

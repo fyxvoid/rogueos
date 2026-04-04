@@ -1,0 +1,6 @@
+[package]
+name = "libs"
+version = "0.1.0"
+edition = "2021"
+description = "Shared types and utilities (no_std where needed)"
+

@@ -1,0 +1,10 @@
+[package]
+name = "boot"
+version = "0.1.0"
+edition = "2021"
+description = "UEFI bootloader — loads kernel ELF, exits boot services, jumps to kernel"
+
+[dependencies]
+uefi = { version = "0.28", default-features = false, features = ["alloc", "global_allocator", "logger"] }
+log = "0.4"
+libs = { path = "../lib" }

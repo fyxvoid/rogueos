@@ -1,0 +1,9 @@
+[package]
+name = "rwm-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "RogueWM — native desktop runner (std + minifb) for fast development"
+
+[dependencies]
+rwm-core  = { path = "../rwm-core" }
+minifb    = "0.28"

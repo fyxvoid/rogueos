@@ -1,0 +1,19 @@
+[package]
+name = "rogue-clip"
+version = "0.1.0"
+edition = "2021"
+authors = ["Rogue Linux Team"]
+description = "Clipboard CLI for Rogue — copy/paste via Wayland or X11 (rogue-clip and rogue-clipboard)"
+license-file = "LICENSE"
+
+[[bin]]
+name = "rogue-clip"
+path = "src/main.rs"
+
+[[bin]]
+name = "rogue-clipboard"
+path = "src/clipboard_main.rs"
+
+[dependencies]
+wl-clipboard-rs = "0.9"
+x11-clipboard = "0.9"

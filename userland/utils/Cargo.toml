@@ -1,0 +1,9 @@
+[package]
+name = "userland-utils"
+version = "0.1.0"
+edition = "2021"
+description = "Utils: screenshot, lock, clipboard (shortcut-triggered)"
+
+[lib]
+
+[dependencies]

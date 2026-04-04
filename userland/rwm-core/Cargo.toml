@@ -1,0 +1,10 @@
+[package]
+name = "rwm-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core types and traits for roguewm — Client, Monitor, Layout, Tags, EventBus"
+license-file = "../../LICENSE"
+
+[dependencies]
+# no_std + alloc mode — compatible with x86_64-unknown-none userland.
+slotmap = { version = "1", default-features = false }

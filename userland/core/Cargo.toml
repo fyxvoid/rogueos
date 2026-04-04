@@ -1,0 +1,11 @@
+[package]
+name = "userland-core"
+version = "0.1.0"
+edition = "2021"
+description = "Unified userland: config, shared types, display backend trait"
+
+[features]
+default = []
+std = []
+
+[dependencies]

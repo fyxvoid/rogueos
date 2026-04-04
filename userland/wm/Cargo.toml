@@ -1,0 +1,11 @@
+[package]
+name = "userland-wm"
+version = "0.1.0"
+edition = "2021"
+description = "Window manager: window list, focus, shortcut mapping"
+
+[lib]
+
+[dependencies]
+userland-core = { path = "../core" }
+userland-compositor = { path = "../compositor" }

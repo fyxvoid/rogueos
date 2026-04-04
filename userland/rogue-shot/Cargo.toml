@@ -1,0 +1,12 @@
+[package]
+name = "rogue-shot"
+version = "0.1.0"
+edition = "2021"
+authors = ["Rogue Linux Team"]
+description = "Screenshot CLI for Rogue — full screen or region via X11 or Wayland (scrot replacement)"
+license-file = "LICENSE"
+
+[dependencies]
+x11-screenshot = "0.2"
+image = "0.23"
+x11rb = { version = "0.13", features = ["allow-unsafe-code"] }

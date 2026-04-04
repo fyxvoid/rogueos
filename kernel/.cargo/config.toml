@@ -1,0 +1,6 @@
+# Kernel build: non-PIE so absolute addresses in asm and linker script work.
+[target.x86_64-unknown-none]
+rustflags = [
+    "-C", "relocation-model=static",
+    "-C", "link-arg=-no-pie",
+]

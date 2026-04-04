@@ -1,0 +1,25 @@
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2021"
+description = "Pure Rust kernel (x86_64, no_std)"
+
+[features]
+default = []
+# GRUB multiboot2 boot: use linker_multiboot2.ld and boot_multiboot2.S.
+# Build from kernel/ so .cargo/config (non-PIE) applies, or set RUSTFLAGS="-C relocation-model=static -C link-arg=-no-pie".
+multiboot2 = []
+
+[lib]
+path = "lib.rs"
+
+[[bin]]
+name = "kernel"
+path = "bin_entry.rs"
+
+[build-dependencies]
+built = { version = "0.7", default-features = false }
+
+[dependencies]
+libs = { path = "../lib" }
+

@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+  "lib",
+  "kernel",
+  "boot",
+  "userland",
+  "userland/core",
+  "userland/compositor",
+  "userland/server",
+  "userland/wm",
+  "userland/utils",
+  "userland/rwm-core",
+  "userland/rwm-desktop",
+  "userland/kapp",
+]
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.dev]
+panic = "abort"
+strip = true

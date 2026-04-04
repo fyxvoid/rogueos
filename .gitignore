@@ -1,0 +1,20 @@
+# Build artifacts
+target/
+build/
+buildhall/output/
+
+# Compiled binaries / objects
+c-sdk/build/
+
+# Editor / IDE
+.cursor/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Claude local settings
+.claude/
+
+# Rust
+**/*.rs.bk
