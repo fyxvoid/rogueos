@@ -281,3 +281,16 @@ See [docs/dev-notes.md](docs/dev-notes.md) for coding standards.
 ## Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for the full 10-phase development plan covering SMP, network stack, capability security, GPU acceleration, and formal verification.
+
+---
+
+## Licence
+
+RogueOS is **free for individuals, students, researchers, non-profits, and
+small businesses** (annual revenue under USD $1M).
+
+Enterprise use, commercial products, embedded/OEM, and SaaS deployments
+require a commercial licence.
+
+See [LICENSE](LICENSE) for the full terms and
+[COMMERCIAL.md](COMMERCIAL.md) for pricing guidance and how to get in touch.

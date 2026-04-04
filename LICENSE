@@ -1,0 +1,200 @@
+RogueOS Source Available License
+Version 1.0, April 2026
+
+Copyright (c) 2026 Sridharan Thangaraji. All rights reserved.
+
+---
+
+DEFINITIONS
+
+"Software" means RogueOS and all source code, documentation, tooling, and
+associated files in this repository.
+
+"You" means the individual or legal entity exercising rights under this License.
+
+"Individual Use" means use by a natural person for personal projects, learning,
+research, or experimentation — not on behalf of a company or organisation.
+
+"Non-Commercial Organisation" means a registered non-profit, educational
+institution, or government body acting in a non-commercial capacity.
+
+"Small Business" means a legal entity whose total gross annual revenue across
+all products and services does not exceed USD $1,000,000 (one million US dollars)
+in the most recently completed fiscal year.
+
+"Commercial Use" means use in connection with a business, product, or service
+that generates — or is intended to generate — revenue.
+
+"Enterprise" means any legal entity whose total gross annual revenue exceeds
+USD $1,000,000 in the most recently completed fiscal year, including any entity
+that is a subsidiary, affiliate, or division of such a company.
+
+"Embed" means including the Software, or a substantial portion of it, as a
+component of a hardware device, appliance, firmware image, or SaaS platform
+that you distribute or provide to third parties.
+
+---
+
+GRANTS — NO LICENCE FEE REQUIRED
+
+The following uses are permitted without a commercial licence agreement:
+
+1. Individual Use
+   Any natural person may use, study, modify, and build upon the Software
+   for personal, educational, or non-commercial purposes.
+
+2. Non-Commercial Organisations
+   Non-profit organisations, universities, schools, and government research
+   bodies may use and modify the Software for internal and research purposes.
+
+3. Small Businesses
+   Legal entities qualifying as a Small Business under the definition above
+   may use the Software internally and incorporate it into products or
+   services, provided annual revenue remains below the threshold.
+   Once annual revenue exceeds USD $1,000,000 you must obtain a commercial
+   licence within 90 days.
+
+4. Open Source Projects
+   You may use, modify, and redistribute the Software or derivative works
+   as part of a project whose complete source code is published under an
+   approved open source licence (OSI-approved), provided you include
+   attribution as described below.
+
+5. Security Research & CTF
+   Security researchers, penetration testers, and CTF participants may use
+   the Software for authorised security testing, research, and competitions.
+
+---
+
+CONDITIONS THAT APPLY TO ALL FREE USES
+
+A. Attribution
+   Any distribution, product, publication, or public demonstration that
+   incorporates the Software or is derived from it must include:
+     - The text "Powered by RogueOS" or "Built on RogueOS" in a visible
+       location (documentation, about screen, or equivalent), and
+     - A link to the project repository or the author's contact.
+
+B. Notices
+   You may not remove or alter any copyright, licence, or attribution notices
+   present in the Software.
+
+C. No Misrepresentation
+   You may not represent the Software as your own original work, claim
+   authorship of the core OS, or imply endorsement by the author.
+
+D. Sharing Modifications (Open Source use only)
+   If you redistribute the Software under clause 4 (Open Source Projects),
+   your modifications must be made available under the same or a compatible
+   open source licence.
+
+---
+
+COMMERCIAL LICENCE REQUIRED
+
+The following uses require a written commercial licence agreement obtained
+from the author before use:
+
+1. Enterprise Use
+   Any Enterprise (as defined above) using the Software internally, in
+   products, or in services must hold a valid commercial licence.
+
+2. Embedding in Commercial Products
+   Embedding the Software in a hardware device, firmware image, appliance,
+   or platform that is sold or licensed to third parties requires a
+   commercial licence, regardless of company size.
+
+3. Managed Service / SaaS
+   Operating the Software as a cloud-hosted or managed service offered to
+   third parties requires a commercial licence.
+
+4. OEM / White-Label Distribution
+   Redistributing the Software as part of a commercial offering under a
+   different name or brand requires a commercial licence.
+
+---
+
+HOW TO OBTAIN A COMMERCIAL LICENCE
+
+Contact: sridharan.thangaraji@protonmail.com
+Subject: RogueOS Commercial Licence Enquiry
+
+Please include:
+  - Your organisation name and annual revenue range
+  - Intended use (internal tooling / product / SaaS / embedded / other)
+  - Approximate number of users or deployments
+
+Licences are priced fairly. The goal is to support continued development,
+not to be a barrier. Small studios, indie companies, and early-stage
+startups are encouraged to reach out — there is room to talk.
+
+---
+
+WHAT YOU MAY ALWAYS DO
+
+Regardless of the above:
+  - You may read and study the source code.
+  - You may fork the repository for personal experimentation.
+  - You may submit bug reports, pull requests, and contributions.
+  - Contributions you submit to this repository are licensed back to the
+    author under the same terms and may be included in commercial releases.
+
+---
+
+INTELLECTUAL PROPERTY
+
+The author retains all copyright and intellectual property rights in the
+Software. This licence grants you limited rights to use the Software under
+the conditions described; it does not transfer ownership of any kind.
+
+The name "RogueOS", "Cogman", the RogueOS logo (if any), and associated
+marks are the author's property. You may not use them in product names,
+domain names, or marketing without written permission.
+
+---
+
+NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. IN NO EVENT SHALL
+THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY — WHETHER IN
+CONTRACT, TORT, OR OTHERWISE — ARISING FROM, OUT OF, OR IN CONNECTION WITH
+THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+---
+
+TERMINATION
+
+Your rights under this licence terminate automatically if you:
+  - Breach any condition of this licence and fail to remedy the breach
+    within 30 days of written notice, or
+  - Commence any patent litigation alleging that the Software infringes
+    a patent.
+
+Upon termination you must cease all use and destroy any copies of the
+Software in your possession.
+
+---
+
+GOVERNING LAW
+
+This licence is governed by the laws of India. Any disputes shall be
+resolved in the courts of Tamil Nadu, India.
+
+---
+
+SUMMARY (non-binding, for convenience)
+
+  Free for:   individuals · students · researchers · non-profits
+              open source projects · small businesses (< $1M/yr revenue)
+              security researchers and pentesters
+
+  Licence needed for:   enterprises (> $1M/yr) · commercial products
+                        SaaS/managed services · OEM/white-label
+
+  Contact to discuss:   sridharan.thangaraji@protonmail.com
+
+---
+
+END OF LICENCE
