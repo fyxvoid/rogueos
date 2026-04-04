@@ -1,83 +1,82 @@
-### RogueOS — Status vs Modern Requirements
+# RogueOS — Current Development Stage
 
-#### Build & tooling
+> Last updated: 2026-04-04
 
-- **Kernel & userland**
-  - `./scripts/build_os.sh` builds userland (init, shell, wm, etc.) and the kernel for `x86_64-unknown-none` successfully.
-  - UEFI bootloader builds successfully and produces a bootable tree in `build/uefi-boot/`.
-- **Host cargo workflow**
-  - `cargo build` for the entire workspace is not meaningful for userland/boot:
-    - Userland bins are bare-metal ELFs with their own `_start`; linking them as host binaries causes CRT `_start` conflicts.
-    - `cargo test -p kernel` is not supported due to conflicting `panic_impl` between kernel’s `no_std` handler and `std`.
+**Overall: Early Alpha / Proof of Concept** — the kernel boots, runs userland, and has real subsystems, but is still single-core, single-address-space, and lacks persistent storage.
 
-#### Runtime validation (QEMU, UEFI)
+---
 
-- **Boot path (latest run, `serial-plan.log`)**
-  - Bootloader:
-    - `[BOOT] uefi_entry` and kernel ELF entry logged from `boot/src/main.rs`.
-  - Kernel:
-    - `[KRN] kernel_main_entry`
-    - `[physical] conventional_region start=0x1780000 pages=0x10000`
-    - `[KRN] physical_init_from_bootinfo_ok`
-    - `[KRN] paging_init_start`
-    - `[KRN] switched to kernel CR3`
-    - `[KRN] identity_map_range done ok=1`
-    - `[physical] build_freelist_start ...` with valid RSP and stack bounds
-    - `debug_walk` confirms first frame PTE is Present+Writable with PA==VA.
-  - System continues to service timer interrupts (INT 0x20) according to `qemu-plan.log`; no immediate invalid opcode or page fault is observed at boot in this run.
+## What works today
 
-#### Paging
+| Subsystem | Status |
+|-----------|--------|
+| UEFI boot | Solid — GOP framebuffer, BootInfo handoff |
+| Physical memory | Working — buddy allocator, slab allocator with canary checks |
+| Virtual memory | Kernel-only — paging mapped, but **no per-process address spaces** |
+| Scheduler | EEVDF, single core, nice levels, preemptive (timer IRQ) |
+| Process model | Spawn-by-ID, exit, waitpid, basic lifecycle |
+| IPC | Per-process 32-message ring, non-blocking recv, confirmed working |
+| Syscall ABI | ~30 syscalls across spawn / process / IPC / display / fs |
+| Display | Framebuffer blitting, surface ownership (RDP), compositor enforcement |
+| WM (rwm) | Tiling layout, keyboard input, RDP compositor integration |
+| PS/2 keyboard | Working — scancode set 2, modifier tracking |
+| NVMe driver | Partial — MMIO, admin + IO queues, BlockDevice trait; **not wired to VFS** |
+| Filesystem | Custom flat VFS (simple_fs + vfs layer), **RAM-only, not persistent** |
+| Userland programs | Shell, editor, viewer, monitor, cogman init supervisor (11 registered) |
+| Cogman | PID 1 supervisor — respawns session/shell, handles halt/reboot exit codes |
+| RDP client lib | `rdp.rs` — surface lifecycle, attach, commit, event polling |
 
-- **Current model**
-  - Kernel has its own PML4 and identity-maps:
-    - 8 MiB around the kernel image.
-    - A large “frame region” chosen from UEFI conventional memory.
-  - Buddy allocator is tied to this frame region; invariants are enforced with:
-    - Stack-bound checks at `build_initial_freelist` entry.
-    - Canary write/read and `push_free` bounds checks for the first free block.
-  - User processes share the kernel CR3; ELF loader and process creation enforce:
-    - Entry PTE is `PRESENT|USER|EXEC`, not writable.
-    - Data PTE is `PRESENT|USER|WRITABLE|NX`.
-    - First 16 bytes at text entry match the ELF file.
-- **Gaps vs modern OS**
-  - No per-process address spaces (single CR3).
-  - No ASLR or guard pages.
-  - Buddy assumes identity-mapped frame region.
-  - Evolution path is spelled out in `docs/design-paging-evolution.md`.
+---
 
-#### Multithreading / SMP
+## What's missing / broken
 
-- **Current model**
-  - Single-core (BSP-only) execution; no AP startup code runs kernel on additional cores.
-  - Single global runqueue with two priority buckets (`runqueue.rs`), scheduling whole processes with one kernel stack each.
-  - Timer interrupts (INT 0x20) drive round-robin scheduling, but there is no thread abstraction distinct from processes.
-- **Gaps vs modern OS**
-  - No SMP support (no per-CPU data, no per-CPU runqueues).
-  - No threads; only processes with one kernel stack and trap frame.
-  - A staged SMP/threading roadmap is documented in `docs/design-smp-and-threads.md`.
+| Gap | Impact |
+|-----|--------|
+| Per-process page tables | All processes share kernel address space — no memory isolation |
+| SMP / multi-core | Single core only; no spinlocks, no cross-core IPI |
+| Threads + futex | No threading primitive; one execution context per process |
+| NVMe ↔ VFS bridge | NVMe driver exists but filesystem never reads from disk |
+| USB (xhci.rs) | Skeleton only — no USB keyboard/mouse support |
+| Network stack | Nothing — no driver, no TCP/IP |
+| Capability security | No per-process token system; all syscalls are ambient |
+| Signal handling | No POSIX signals; cogman uses exit-code conventions instead |
+| Dynamic linking | All userland is statically linked ELF, no shared libs |
+| Time / RTC | No wall clock; scheduler has ticks but no `gettimeofday` |
 
-#### Display server, compositor, WM
+---
 
-- **Current pipeline**
-  - Kernel:
-    - `drivers::framebuffer` owns the GOP framebuffer, providing `clear`, `fill_rect`, `blit`, and `flush`.
-    - `display::display_server` implements a simple surface API on top, but this API is currently **kernel-internal**.
-  - Userland:
-    - WM (`userland/src/bin/wm.rs`) draws directly into the framebuffer via syscalls:
-      - `sys_fb_clear`, `sys_fb_fill_rect`, `sys_fb_flush`.
-    - WM handles focus and window decorations inside a single process.
-- **Gaps vs modern OS**
-  - No user-visible surface protocol (no Wayland/X11-style compositing).
-  - No multi-client composition; WM and apps are not separated at the kernel level.
-  - No damage tracking, vsync-awareness, or double-buffering.
-  - Evolution path is described in `docs/design-display-evolution.md`.
+## Progress by layer
 
-#### Overall readiness
+```
+[UEFI + Boot]     ████████░░  solid, reliable
+[Memory Mgmt]     ██████░░░░  physical/slab done; VM isolation missing
+[Scheduler]       ███████░░░  EEVDF works; no SMP/threads
+[IPC]             ████████░░  working, used in production by wm + cogman
+[Display/RDP]     ███████░░░  compositor + surface model done; no GPU accel
+[Filesystem]      ████░░░░░░  VFS layer exists; no disk persistence
+[Drivers]         █████░░░░░  framebuffer ✓, PS/2 ✓, NVMe partial, USB none
+[Userland]        ██████░░░░  shell, wm, cogman working; no libc equiv
+[Security]        ████░░░░░░  compositor enforcement done; no process isolation
+[Network]         ░░░░░░░░░░  not started
+```
 
-- **Boots reliably under QEMU/UEFI** with the current kernel image and userland, reaching early kernel initialization and paging setup.
-- **Paging and buddy invariants are instrumented and hold** in the current run (stack bounds, first frame mapping, canary path up to the first `push_free`).
-- **Modern requirements status (high level)**
-  - Paging: **Partially modern** (NX, user/kernel split at PTE level, large-page identity mapping) but missing per-process address spaces and ASLR.
-  - Multithreading/SMP: **Single-core only**, no SMP; design roadmap prepared.
-  - Display/compositor/WM: **Single-client, single-framebuffer model**, toy WM; evolution plan to introduce surfaces and multi-client composition.
+---
 
+## Next highest-leverage work
+
+1. **Wire NVMe → VFS** — unlocks persistent storage; filesystem already exists, just needs a real block backend
+2. **Per-process page tables** — actual memory isolation; design doc is at `docs/design-paging-evolution.md`
+3. **Threads + futex** — needed before any real multi-threaded app can run; design at `docs/design-smp-and-threads.md`
+
+Those three would move RogueOS from "interesting demo" to "real OS."
+
+---
+
+## Build & runtime notes
+
+- `./scripts/build_os.sh` builds the full OS (kernel + userland) for `x86_64-unknown-none`
+- `./scripts/run_qemu.sh` boots in QEMU/UEFI; serial output confirms boot to userland
+- Host `cargo build` is not meaningful for userland/boot (bare-metal ELFs with custom `_start`)
+- Detailed boot log analysis: see `docs/build-status.md`
+- Architecture docs: `docs/arch-*.md`
+- Full roadmap: `ROADMAP.md`
