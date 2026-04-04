@@ -145,6 +145,29 @@ pub fn index_of_pid(pid: Pid) -> Option<usize> {
     None
 }
 
+/// Wake any process blocked in sys_waitpid waiting for `dead_pid` (or any child if u32::MAX).
+/// Sets the waiter Runnable and re-enqueues it. Called from exit_current_and_schedule.
+pub fn wake_waiters_for(dead_pid: Pid) {
+    unsafe {
+        for i in 0..MAX_PROCESSES {
+            if let Some(ref mut p) = PROCESS_TABLE[i] {
+                if p.state != super::process::ProcessState::Blocked {
+                    continue;
+                }
+                let matches = match p.waiting_for {
+                    None => false,
+                    Some(w) => w == dead_pid || w == u32::MAX,
+                };
+                if matches {
+                    p.state = super::process::ProcessState::Runnable;
+                    p.waiting_for = None;
+                    super::scheduler::enqueue_runqueue(i);
+                }
+            }
+        }
+    }
+}
+
 /// Check canary at bottom of current process kernel stack. Halt on corruption.
 pub(crate) fn check_kernel_stack_canary() {
     let idx = unsafe { CURRENT_INDEX };

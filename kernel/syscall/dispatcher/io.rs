@@ -10,14 +10,26 @@ pub(super) fn sys_read(fd: u32, buf: *mut u8, count: usize) -> Result<u64, SysEr
     let cr3 = user_ptr::current_cr3()?;
     user_ptr::validate_user_range(cr3, buf as u64, count, true)?;
     if fd == 0 {
+        // Block until at least one byte arrives; stop at newline or buffer full.
+        // This gives the shell a natural blocking read without busy-looping at
+        // the prompt and without requiring cooperative yielding to other processes.
         let mut n = 0usize;
-        while n < count {
+        loop {
             match crate::drivers::tty::getchar() {
-                None => break,
+                None => {
+                    if n > 0 {
+                        // Have partial data; return it so caller can process.
+                        break;
+                    }
+                    // Spin (polling) until first char arrives. Tiny asm pause to
+                    // reduce bus pressure.
+                    unsafe { core::arch::asm!("pause", options(nomem, nostack)); }
+                    continue;
+                }
                 Some(b) => {
-                    unsafe { *buf.add(n) = b }
+                    unsafe { *buf.add(n) = b; }
                     n += 1;
-                    if b == b'\n' {
+                    if b == b'\n' || b == b'\r' || n >= count {
                         break;
                     }
                 }

@@ -5,9 +5,9 @@ mod debug;
 pub mod ipc;
 mod lifecycle;
 mod loader;
-mod pid;
+pub(crate) mod pid;
 mod process;
-mod scheduler;
+pub(crate) mod scheduler;
 
 pub use lifecycle::{
     create_user_process, exit_current_and_schedule, get_proc_info_snapshot, run_first_process,
@@ -16,7 +16,7 @@ pub use lifecycle::{
 pub use ipc::{ipc_clear, ipc_dequeue, ipc_enqueue};
 pub use pid::{
     current_descriptor, current_index, current_pid, current_pid_for_fault, get_descriptor,
-    get_descriptor_mut, index_of_pid, reap_dead,
+    get_descriptor_mut, index_of_pid, reap_dead, wake_waiters_for,
 };
 pub use process::{
     dump_state_serial, ProcessDescriptor, ProcessState, TrapFrame, Pid, INVALID_PID,

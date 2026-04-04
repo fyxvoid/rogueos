@@ -73,6 +73,8 @@ pub struct ProcessDescriptor {
     pub exit_status: Option<i32>,
     /// Hardware breakpoint state (DR0-DR7) — saved/restored on context switch.
     pub hw_bp: HwBpState,
+    /// PID this process is blocked waiting for (u32::MAX = any child). None if not blocked.
+    pub waiting_for: Option<Pid>,
 }
 
 impl ProcessDescriptor {
@@ -96,6 +98,7 @@ impl ProcessDescriptor {
             trap_frame,
             exit_status: None,
             hw_bp: HwBpState::new(),
+            waiting_for: None,
         }
     }
 
@@ -206,7 +209,7 @@ mod tests {
 
     #[test]
     fn test_constants() {
-        assert_eq!(MAX_PROCESSES, 10);
+        assert_eq!(MAX_PROCESSES, 64);
         assert_eq!(USER_LOAD_BASE, 0x400_000);
         assert_eq!(USER_STACK_TOP, 0x7fff_ffff_f000);
     }

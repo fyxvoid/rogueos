@@ -332,6 +332,8 @@ pub fn exit_current_and_schedule(exit_status: Option<i32>) -> ! {
     }
     scheduler::remove_from_runqueue(current_idx);
     // Do not release_slot here; process stays as zombie until waitpid reaps it.
+    // Wake any process blocked in waitpid waiting for this pid.
+    pid::wake_waiters_for(exiting_pid);
     pid::set_current(None);
 
     log_scheduler_tick(Some(exiting_pid), scheduler::runqueue_total_len());
