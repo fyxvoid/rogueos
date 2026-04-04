@@ -2,7 +2,7 @@
 name = "kapp"
 version = "0.1.0"
 edition = "2021"
-description = "Kingdom OS application SDK: window, event loop, IPC helpers (no_std + alloc)"
+description = "RogueOS application SDK: window, event loop, IPC helpers (no_std + alloc)"
 
 [dependencies]
 libs = { path = "../../lib" }

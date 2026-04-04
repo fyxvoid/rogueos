@@ -1,5 +1,5 @@
 #!/bin/sh
-# Boot Kingdom OS with GRUB (Multiboot2) from a CD-ROM ISO.
+# Boot RogueOS with GRUB (Multiboot2) from a CD-ROM ISO.
 # Uses SeaBIOS (no OVMF); GRUB loads the kernel from the ISO.
 #
 # Usage (from repo root):

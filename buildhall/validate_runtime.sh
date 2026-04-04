@@ -1,5 +1,5 @@
 #!/bin/sh
-# Runtime validation: rebuild, update ESP, verify kernel hash, then boot Kingdom in QEMU.
+# Runtime validation: rebuild, update ESP, verify kernel hash, then boot RogueOS in QEMU.
 # Guarantees the kernel executed in QEMU matches the freshly built binary exactly.
 # Set SKIP_REBUILD=1 to skip rebuild/ESP/hash and only run QEMU (for quick re-runs).
 #
@@ -80,7 +80,7 @@ if [ "$VALIDATE_GRUB" = "1" ]; then
 
   {
     echo "----------------------------------------"
-    echo "KINGDOM OS — GRUB RUNTIME VERDICT"
+    echo "ROGUEOS — GRUB RUNTIME VERDICT"
     echo "----------------------------------------"
     echo "Boot: $([ $BOOT_FAIL -eq 0 ] && echo PASS || echo FAIL)"
     echo "Exceptions: $EXCEPTION_COUNT"
@@ -341,7 +341,7 @@ LINES=$(wc -l < "$SERIAL_LOG" 2>/dev/null || echo 0)
 # ---------- SECTION 9: Verdict output ----------
 {
   echo "----------------------------------------"
-  echo "KINGDOM OS — FIRMWARE + RUNTIME VERDICT"
+  echo "ROGUEOS — FIRMWARE + RUNTIME VERDICT"
   echo "----------------------------------------"
   echo ""
   echo "Boot: $([ $BOOT_FAIL -eq 0 ] && echo PASS || echo FAIL)"

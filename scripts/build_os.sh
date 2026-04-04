@@ -86,7 +86,7 @@ fi
 
 if [ "$BUILD_DESKTOP" = true ]; then
   echo "=== Building unified userland (session, init, wm, ...) ==="
-  cargo build --release -p userland --target x86_64-unknown-none 2>/dev/null || echo "  (userland Kingdom target build failed or skipped)"
+  cargo build --release -p userland --target x86_64-unknown-none 2>/dev/null || echo "  (userland RogueOS target build failed or skipped)"
   echo "Unified userland build done (binaries in target/x86_64-unknown-none/release)."
 fi
 

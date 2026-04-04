@@ -1,4 +1,4 @@
-//! cogman -Kingdom OS init supervisor (PID 1).
+//! cogman -RogueOS init supervisor (PID 1).
 //!
 //! Text-mode supervisor: spawns the shell, blocks until it exits, then
 //! respawns it. If the shell exits with status 42 (halt code), cogman
@@ -51,7 +51,7 @@ fn log_u32(n: u32) {
 
 #[no_mangle]
 fn _start() -> ! {
-    log(b"\r\n[COGMAN] Kingdom OS supervisor started\r\n");
+    log(b"\r\n[COGMAN] RogueOS supervisor started\r\n");
     log(b"[COGMAN] Programs: shell=0 editor=2 viewer=3 copy=4 monitor=5 shutdown=6\r\n");
 
     let mut restarts: u32 = 0;

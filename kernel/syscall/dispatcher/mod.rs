@@ -12,7 +12,7 @@ mod process;
 
 use crate::syscall::user_ptr::{self, SysErr};
 use libs::{
-    KeyEvent, KwmMsg, MouseEvent, ProcInfo,
+    KeyEvent, RwmMsg, MouseEvent, ProcInfo,
     SYS_CLOSE, SYS_DEBUG_DUMP_PTES, SYS_EXIT,
     SYS_FB_BLIT, SYS_FB_CLEAR, SYS_FB_FILL_RECT, SYS_FB_FLUSH,
     SYS_FSYNC, SYS_GETPID, SYS_GET_PROC_INFO, SYS_IPC_RECV, SYS_IPC_SEND,
@@ -107,7 +107,7 @@ pub extern "C" fn syscall_dispatch(
         SYS_FB_BLIT => user_ptr::result_to_rax(
             gfx::sys_fb_blit(a1 as u32, a2 as u32, a3 as u32, a4 as u32, a5 as u32, _a6 as *const u8),
             |v| v, |e| e.0),
-        // ── KDP compositor control ────────────────────────────────────────
+        // ── RDP compositor control ────────────────────────────────────────
         SYS_CLAIM_COMPOSITOR => user_ptr::result_to_rax(
             gfx::sys_claim_compositor(), |v| v, |e| e.0),
         SYS_COMPOSITE_ALL => user_ptr::result_to_rax(
@@ -117,10 +117,10 @@ pub extern "C" fn syscall_dispatch(
 
         // ── IPC protocol ─────────────────────────────────────────────────
         SYS_IPC_SEND => user_ptr::result_to_rax(
-            ipc::sys_ipc_send(a1 as u32, a2 as *const KwmMsg, a3 as u32),
+            ipc::sys_ipc_send(a1 as u32, a2 as *const RwmMsg, a3 as u32),
             |v| v, |e| e.0),
         SYS_IPC_RECV => user_ptr::result_to_rax(
-            ipc::sys_ipc_recv(a1 as *mut KwmMsg, a2 as u32),
+            ipc::sys_ipc_recv(a1 as *mut RwmMsg, a2 as u32),
             |v| v, |e| e.0),
 
         // ── Hardware breakpoints (pentester/debugger primitives) ──────────

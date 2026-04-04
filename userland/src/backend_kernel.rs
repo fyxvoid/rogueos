@@ -1,5 +1,5 @@
 //! Kernel display backend: implements DisplayBackend using sys_fb_* syscalls.
-//! Used by the unified session binary on Kingdom (x86_64-unknown-none).
+//! Used by the unified session binary on RogueOS (x86_64-unknown-none).
 
 use userland_core::DisplayBackend;
 use crate::{sys_fb_clear, sys_fb_fill_rect, sys_fb_flush};

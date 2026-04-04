@@ -1,4 +1,4 @@
-//! Kingdom WM — a dwm-inspired tiling window manager for Kingdom OS.
+//! RogueOS WM — a dwm-inspired tiling window manager for RogueOS.
 //!
 //! Features
 //! ────────
@@ -33,7 +33,7 @@
 #![no_std]
 #![no_main]
 
-use libs::{keycodes::*, IPC_NONBLOCK, KwmMsg};
+use libs::{keycodes::*, IPC_NONBLOCK, RwmMsg};
 use libs::KeyEvent;
 use userland::{
     sys_claim_compositor, sys_exit, sys_fb_clear, sys_fb_fill_rect, sys_fb_flush,
@@ -42,15 +42,15 @@ use userland::{
     sys_surface_commit, sys_surface_destroy,
 };
 
-// KDP message type bytes (mirror libs::KwmType repr).
-const KDP_CONNECT:    u8 = 0x50;
-const KDP_GRANT:      u8 = 0x51;
-const KDP_COMMIT:     u8 = 0x52;
-const KDP_RESIZE:     u8 = 0x53;
-const KDP_KEY:        u8 = 0x54;
-const KDP_FOCUS:      u8 = 0x55;
-const KDP_CLOSE:      u8 = 0x56;
-const KDP_DISCONNECT: u8 = 0x57;
+// RDP message type bytes (mirror libs::RwmType repr).
+const RDP_CONNECT:    u8 = 0x50;
+const RDP_GRANT:      u8 = 0x51;
+const RDP_COMMIT:     u8 = 0x52;
+const RDP_RESIZE:     u8 = 0x53;
+const RDP_KEY:        u8 = 0x54;
+const RDP_FOCUS:      u8 = 0x55;
+const RDP_CLOSE:      u8 = 0x56;
+const RDP_DISCONNECT: u8 = 0x57;
 
 // ── Theme: Tokyo Night ────────────────────────────────────────────────────────
 
@@ -167,7 +167,7 @@ struct Client {
     prog_id: u8,
     /// Spawned process ID (from sys_spawn), 0 if no process.
     pid: u32,
-    /// KDP surface ID (created by client via SYS_SURFACE_CREATE). 0 = no surface.
+    /// RDP surface ID (created by client via SYS_SURFACE_CREATE). 0 = no surface.
     surface_id: u32,
     /// Short display title.
     title: [u8; 20],
@@ -805,7 +805,7 @@ fn draw_bar(wm: &Wm) {
     }
 
     // ── Status text (right-aligned) ───────────────────────────────────
-    let status: &[u8] = b"kingdom";
+    let status: &[u8] = b"rogueos";
     let sw = status.len() as u32 * (FONT_W + 1);
     let rx = wm.sw.saturating_sub(sw + 6);
     draw_text(rx, text_y, status, C_STATUS);
@@ -814,13 +814,13 @@ fn draw_bar(wm: &Wm) {
     let _ = sys_fb_fill_rect(0, BAR_H - 1, wm.sw, 1, 0xFF_29_2E_42);
 }
 
-// ── KDP compositor helpers ────────────────────────────────────────────────────
+// ── RDP compositor helpers ────────────────────────────────────────────────────
 
-/// Send KdpGrant to a client: tells it its geometry.
+/// Send RdpGrant to a client: tells it its geometry.
 fn send_kdp_grant(client_pid: u32, surface_id: u32, x: i32, y: i32, w: u32, h: u32, title: &[u8]) {
-    let mut msg = KwmMsg::ZERO;
-    msg.msg_type = KDP_GRANT;
-    let kdp = unsafe { &mut msg.payload.kdp };
+    let mut msg = RwmMsg::ZERO;
+    msg.msg_type = RDP_GRANT;
+    let kdp = unsafe { &mut msg.payload.rdp };
     kdp.surface_id = surface_id;
     kdp.x = x;
     kdp.y = y;
@@ -831,53 +831,53 @@ fn send_kdp_grant(client_pid: u32, surface_id: u32, x: i32, y: i32, w: u32, h: u
     let _ = sys_ipc_send(client_pid, &msg, 0);
 }
 
-/// Send KdpResize to a client: compositor has relaid out, client should re-render.
+/// Send RdpResize to a client: compositor has relaid out, client should re-render.
 fn send_kdp_resize(client_pid: u32, surface_id: u32, w: u32, h: u32) {
-    let mut msg = KwmMsg::ZERO;
-    msg.msg_type = KDP_RESIZE;
-    let kdp = unsafe { &mut msg.payload.kdp };
+    let mut msg = RwmMsg::ZERO;
+    msg.msg_type = RDP_RESIZE;
+    let kdp = unsafe { &mut msg.payload.rdp };
     kdp.surface_id = surface_id;
     kdp.width = w;
     kdp.height = h;
     let _ = sys_ipc_send(client_pid, &msg, 0);
 }
 
-/// Forward a key event to a focused KDP client.
+/// Forward a key event to a focused RDP client.
 fn send_kdp_key(client_pid: u32, keycode: u8, pressed: bool) {
-    let mut msg = KwmMsg::ZERO;
-    msg.msg_type = KDP_KEY;
-    let kdp = unsafe { &mut msg.payload.kdp };
+    let mut msg = RwmMsg::ZERO;
+    msg.msg_type = RDP_KEY;
+    let kdp = unsafe { &mut msg.payload.rdp };
     kdp.key_code = keycode as u32;
     kdp.key_state = if pressed { 1 } else { 0 };
     let _ = sys_ipc_send(client_pid, &msg, 0);
 }
 
-/// Send KdpFocus to a client: focused=true or false.
+/// Send RdpFocus to a client: focused=true or false.
 fn send_kdp_focus(client_pid: u32, focused: bool) {
-    let mut msg = KwmMsg::ZERO;
-    msg.msg_type = KDP_FOCUS;
-    let kdp = unsafe { &mut msg.payload.kdp };
+    let mut msg = RwmMsg::ZERO;
+    msg.msg_type = RDP_FOCUS;
+    let kdp = unsafe { &mut msg.payload.rdp };
     kdp.flags = if focused { 1 } else { 0 };
     let _ = sys_ipc_send(client_pid, &msg, 0);
 }
 
-/// Send KdpClose to a client: politely ask it to exit.
+/// Send RdpClose to a client: politely ask it to exit.
 fn send_kdp_close(client_pid: u32, surface_id: u32) {
-    let mut msg = KwmMsg::ZERO;
-    msg.msg_type = KDP_CLOSE;
-    let kdp = unsafe { &mut msg.payload.kdp };
+    let mut msg = RwmMsg::ZERO;
+    msg.msg_type = RDP_CLOSE;
+    let kdp = unsafe { &mut msg.payload.rdp };
     kdp.surface_id = surface_id;
     let _ = sys_ipc_send(client_pid, &msg, 0);
 }
 
 /// Handle one incoming IPC message addressed to the compositor.
 /// Returns true if the scene needs a redraw.
-fn handle_ipc_msg(wm: &mut Wm, msg: &KwmMsg) -> bool {
+fn handle_ipc_msg(wm: &mut Wm, msg: &RwmMsg) -> bool {
     let sender = msg.sender_pid;
-    let kdp = unsafe { msg.payload.kdp };
+    let kdp = unsafe { msg.payload.rdp };
 
     match msg.msg_type {
-        KDP_CONNECT => {
+        RDP_CONNECT => {
             // Client wants a window; it has already created a surface.
             let surface_id = kdp.surface_id;
             // Extract title from payload.
@@ -894,7 +894,7 @@ fn handle_ipc_msg(wm: &mut Wm, msg: &KwmMsg) -> bool {
             send_kdp_grant(sender, surface_id, c.x, c.y, c.w, c.h, title);
             true
         }
-        KDP_COMMIT => {
+        RDP_COMMIT => {
             // Client updated its surface buffer; blit it to the framebuffer.
             let surface_id = kdp.surface_id;
             // Find the client.
@@ -908,7 +908,7 @@ fn handle_ipc_msg(wm: &mut Wm, msg: &KwmMsg) -> bool {
             }
             false // partial blit — full flush done in draw_scene
         }
-        KDP_DISCONNECT => {
+        RDP_DISCONNECT => {
             // Client is closing; find and remove it.
             let surface_id = kdp.surface_id;
             for i in 0..MAX_WIN {
@@ -969,7 +969,7 @@ fn draw_scene(wm: &mut Wm) {
                 );
             }
 
-            // Blit KDP surface if client has rendered content; otherwise draw placeholder.
+            // Blit RDP surface if client has rendered content; otherwise draw placeholder.
             if c.surface_id != 0 && w > BORDER * 2 && h > BORDER * 2 {
                 // surface_commit blits the client's pixel buffer at the content area.
                 let _ = sys_surface_commit(
@@ -1027,7 +1027,7 @@ fn draw_window_content(wm: &Wm, idx: usize, focused: bool) {
 fn handle_key(wm: &mut Wm, key: u8, pressed: bool) -> bool {
     // Only act on WM bindings for key press events.
     if !pressed {
-        // Forward release events to focused KDP client and return.
+        // Forward release events to focused RDP client and return.
         let idx = wm.focused;
         if idx < MAX_WIN && wm.clients[idx].alive {
             let c = &wm.clients[idx];
@@ -1157,13 +1157,13 @@ fn handle_key(wm: &mut Wm, key: u8, pressed: bool) -> bool {
                 wm.layout = wm.layout.prev();
                 return true;
             }
-            // Close focused window: send KdpClose IPC if it's a KDP client; remove otherwise.
+            // Close focused window: send RdpClose IPC if it's a RDP client; remove otherwise.
             KEY_C => {
                 let idx = wm.focused;
                 if idx < MAX_WIN && wm.clients[idx].alive {
                     let c = &wm.clients[idx];
                     if c.pid != 0 && c.surface_id != 0 {
-                        // Politely ask the KDP client to close; it will send KdpDisconnect back.
+                        // Politely ask the RDP client to close; it will send RdpDisconnect back.
                         send_kdp_close(c.pid, c.surface_id);
                     } else {
                         wm.remove_client(idx);
@@ -1181,7 +1181,7 @@ fn handle_key(wm: &mut Wm, key: u8, pressed: bool) -> bool {
         }
     }
 
-    // No WM binding matched — forward the key press to the focused KDP client (if any).
+    // No WM binding matched — forward the key press to the focused RDP client (if any).
     let idx = wm.focused;
     if idx < MAX_WIN && wm.clients[idx].alive {
         let c = &wm.clients[idx];
@@ -1196,7 +1196,7 @@ fn handle_key(wm: &mut Wm, key: u8, pressed: bool) -> bool {
 
 #[no_mangle]
 fn _start() -> ! {
-    log(b"[WM] kingdom-wm starting (KDP compositor)\r\n");
+    log(b"[WM] rogueos-wm starting (RDP compositor)\r\n");
 
     // Claim compositor authority — this PID is now the only one that may
     // call sys_surface_commit. Clients call sys_get_compositor_pid() to find us.
@@ -1209,7 +1209,7 @@ fn _start() -> ! {
 
     let mut wm = Wm::new();
 
-    // Pre-create a welcome placeholder (no KDP surface; drawn with fb ops).
+    // Pre-create a welcome placeholder (no RDP surface; drawn with fb ops).
     let idx = wm.add_client(0xFF, b"welcome");
     wm.clients[idx].tags = 0x01;
     wm.focused = idx;
@@ -1218,7 +1218,7 @@ fn _start() -> ! {
     log(b"[WM] initial draw done\r\n");
 
     let mut ev = KeyEvent { keycode: 0, pressed: false };
-    let mut ipc_msg = KwmMsg::ZERO;
+    let mut ipc_msg = RwmMsg::ZERO;
     let mut idle_ticks: u32 = 0;
 
     loop {

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Kingdom OS: full workspace build (kernel + userland + bootloader) with strict warnings.
+# RogueOS: full workspace build (kernel + userland + bootloader) with strict warnings.
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

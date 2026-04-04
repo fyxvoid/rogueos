@@ -1,14 +1,14 @@
 # IPC Protocol
 
-Kingdom processes communicate through a kernel-mediated message-passing system. There is no shared memory by default. Every message is a fixed 64-byte `KwmMsg` (one cache line).
+RogueOS processes communicate through a kernel-mediated message-passing system. There is no shared memory by default. Every message is a fixed 64-byte `RwmMsg` (one cache line).
 
 ---
 
 ## Message Format
 
 ```
-struct KwmMsg {               // 64 bytes, align(64)
-    msg_type:   u8,           // KwmType discriminant
+struct RwmMsg {               // 64 bytes, align(64)
+    msg_type:   u8,           // RwmType discriminant
     flags:      u8,           // reserved; set to 0
     seq:        u16,          // caller-assigned sequence number (for ACK matching)
     sender_pid: u32,          // filled by the kernel on SYS_IPC_SEND
@@ -30,7 +30,7 @@ let r = sys_ipc_send(target_pid, &msg, IPC_NONBLOCK);
 // r == SYSERR_NOENT: no process with that PID
 
 // Receive (non-blocking)
-let mut msg = KwmMsg::ZERO;
+let mut msg = RwmMsg::ZERO;
 let r = sys_ipc_recv(&mut msg, IPC_NONBLOCK);
 // r == 0: msg filled
 // r == SYSERR_AGAIN: queue empty
@@ -180,23 +180,23 @@ Any process can query the supervisor:
 
 ```rust
 // List all services
-let mut req = KwmMsg::ZERO;
-req.msg_type = KwmType::CogList as u8;
+let mut req = RwmMsg::ZERO;
+req.msg_type = RwmType::CogList as u8;
 sys_ipc_send(COGMAN_PID, &req, 0);
 
 // Cogman sends one CogResp per service
 loop {
-    let mut resp = KwmMsg::ZERO;
+    let mut resp = RwmMsg::ZERO;
     if sys_ipc_recv(&mut resp, IPC_NONBLOCK) < 0 { break; }
-    if resp.msg_type == KwmType::CogResp as u8 {
+    if resp.msg_type == RwmType::CogResp as u8 {
         let ctrl = unsafe { &resp.payload.cog_ctrl };
         // ctrl.program_id, ctrl.state, ctrl.pid, ctrl.name, ctrl.restart_count
     }
 }
 
 // Stop a service
-let mut req = KwmMsg::ZERO;
-req.msg_type = KwmType::CogStop as u8;
+let mut req = RwmMsg::ZERO;
+req.msg_type = RwmType::CogStop as u8;
 unsafe { req.payload.cog_ctrl.program_id = 8; } // stop session
 sys_ipc_send(COGMAN_PID, &req, 0);
 ```

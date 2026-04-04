@@ -1,12 +1,12 @@
-# Kingdom OS
+# RogueOS
 
 A clean-room, Rust-only operating system for x86_64. No Linux, no libc, no POSIX.
 
 ---
 
-## What is Kingdom?
+## What is RogueOS?
 
-Kingdom is a minimal, research-grade operating system written entirely in Rust. Every subsystem — bootloader, kernel, drivers, window manager, shell, and init — is original code with no GPL or POSIX derivation.
+RogueOS is a minimal, research-grade operating system written entirely in Rust. Every subsystem — bootloader, kernel, drivers, window manager, shell, and init — is original code with no GPL or POSIX derivation.
 
 The design makes four bets:
 
@@ -20,8 +20,8 @@ The design makes four bets:
 ## Repository Layout
 
 ```
-kingdom/
-├── lib/            Shared ABI: syscall numbers, KwmMsg, BootInfo, error codes
+rogueos/
+├── lib/            Shared ABI: syscall numbers, RwmMsg, BootInfo, error codes
 ├── boot/           UEFI bootloader (exits boot services, jumps to kernel)
 ├── kernel/         Kernel crate (no_std, x86_64-unknown-none)
 │   ├── arch/       x86_64: GDT, IDT, TSS, SYSCALL MSR, PS/2, serial, SME
@@ -162,7 +162,7 @@ Address layout:
 | Lifecycle | `lifecycle.rs` | `create_user_process`, `exit_current_and_schedule` |
 | Scheduler | `scheduler/eevdf.rs` | EEVDF (Earliest Eligible Virtual Deadline First) |
 | ELF loader | `loader/elf.rs` | Loads PT_LOAD segments; sets entry RIP |
-| IPC queues | `ipc.rs` | Per-process 64-slot KwmMsg ring; enqueue/dequeue |
+| IPC queues | `ipc.rs` | Per-process 64-slot RwmMsg ring; enqueue/dequeue |
 | Context | `context/mod.rs` | `enter_user()` — iretq into ring 3 |
 
 Process states: `Empty → Runnable → Running → Dead`
@@ -237,7 +237,7 @@ _start()
       → schedule restart per policy
     tick_restarts()            [countdown timers]
     start_pending()            [spawn anything due]
-    handle_ipc()               [drain KwmMsg queue: CogList/Status/Start/Stop/Restart]
+    handle_ipc()               [drain RwmMsg queue: CogList/Status/Start/Stop/Restart]
     spin(1000 ticks)
 ```
 
@@ -249,10 +249,10 @@ Any process can send a `CogCtrl` IPC message to PID 1 to query or control servic
 
 ## IPC Protocol
 
-Messages are fixed 64-byte `KwmMsg` structs (cache-line aligned):
+Messages are fixed 64-byte `RwmMsg` structs (cache-line aligned):
 
 ```
-offset  0  msg_type   u8        (KwmType enum value)
+offset  0  msg_type   u8        (RwmType enum value)
 offset  1  flags      u8
 offset  2  seq        u16       (monotonic, wraps at u16::MAX)
 offset  4  sender_pid u32       (filled by kernel)

@@ -1,6 +1,6 @@
-# Cogman — Kingdom Init Supervisor
+# Cogman — RogueOS Init Supervisor
 
-Cogman is the first userland process on Kingdom OS. It runs as PID 1 and is responsible for spawning, watching, and healing every other process on the system.
+Cogman is the first userland process on RogueOS. It runs as PID 1 and is responsible for spawning, watching, and healing every other process on the system.
 
 ---
 
@@ -81,7 +81,7 @@ loop:
 
   4. handle_ipc()
      sys_ipc_recv(IPC_NONBLOCK) — drain all queued messages
-     Dispatch by KwmType
+     Dispatch by RwmType
 
   5. spin(1000 poll_input ticks)  ≈ 10 ms delay
 ```
@@ -138,18 +138,18 @@ payload.cog_ctrl:
 
 ```rust
 // In a userland program
-use libs::{KwmMsg, KwmType, IPC_NONBLOCK, COGMAN_PID};
+use libs::{RwmMsg, RwmType, IPC_NONBLOCK, COGMAN_PID};
 use userland::{sys_ipc_send, sys_ipc_recv, sys_write};
 
 fn query_services() {
-    let mut req = KwmMsg::ZERO;
-    req.msg_type = KwmType::CogList as u8;
+    let mut req = RwmMsg::ZERO;
+    req.msg_type = RwmType::CogList as u8;
     sys_ipc_send(COGMAN_PID, &req, 0);
 
     loop {
-        let mut resp = KwmMsg::ZERO;
+        let mut resp = RwmMsg::ZERO;
         if sys_ipc_recv(&mut resp, IPC_NONBLOCK) < 0 { break; }
-        if resp.msg_type != KwmType::CogResp as u8 { continue; }
+        if resp.msg_type != RwmType::CogResp as u8 { continue; }
         let ctrl = unsafe { &resp.payload.cog_ctrl };
         let state = match ctrl.state {
             0 => b"stopped   " as &[u8],

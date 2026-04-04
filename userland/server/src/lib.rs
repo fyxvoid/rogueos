@@ -5,7 +5,7 @@
 
 use userland_core::DisplayBackend;
 
-/// Server holds the display backend. On Kingdom there is one global framebuffer;
+/// Server holds the display backend. On RogueOS there is one global framebuffer;
 /// "connect" is implicit; attach/commit are used when we have surface API.
 pub struct Server<B> {
     pub backend: B,

@@ -1,4 +1,4 @@
-//! Kingdom OS interactive shell.
+//! RogueOS interactive shell.
 //!
 //! Runs as PID 2 (spawned by cogman). Reads lines from the TTY, dispatches
 //! built-in commands, and spawns userland programs (blocking until they exit).
@@ -226,7 +226,7 @@ fn cmd_ls() {
 // ── Built-in: help ────────────────────────────────────────────────────────
 
 fn cmd_help() {
-    write_str(b"\r\nKingdom OS shell commands:\r\n\r\n");
+    write_str(b"\r\nRogueOS shell commands:\r\n\r\n");
     write_str(b"  help              -show this help\r\n");
     write_str(b"  ls                -list filesystem root\r\n");
     write_str(b"  cat <file>        -print file contents\r\n");
@@ -257,7 +257,7 @@ fn cmd_clear() {
 #[no_mangle]
 fn _start() -> ! {
     cmd_clear();
-    write_str(b"Kingdom OS shell. Type 'help' for commands.\r\n\r\n");
+    write_str(b"RogueOS shell. Type 'help' for commands.\r\n\r\n");
 
     let mut line_buf = [0u8; LINE];
 

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Kingdom OS: run GPT ESP disk (build/esp_disk.img) in QEMU with UEFI (OVMF).
+# RogueOS: run GPT ESP disk (build/esp_disk.img) in QEMU with UEFI (OVMF).
 # Uses serial->stdio for logs and a simple virtio disk for the ESP image.
 set -e
 

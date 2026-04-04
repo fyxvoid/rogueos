@@ -1,19 +1,19 @@
 //! Per-process IPC ring buffer.
 //!
-//! Each process gets a fixed-depth queue of [`KwmMsg`] (64 bytes each).
+//! Each process gets a fixed-depth queue of [`RwmMsg`] (64 bytes each).
 //! All operations are O(1) and require no heap allocation.
 //!
 //! Safety: the kernel is single-core and interrupts are disabled during
 //! syscall dispatch, so bare static-mut access is safe here.
 
-use libs::KwmMsg;
+use libs::RwmMsg;
 use super::process::MAX_PROCESSES;
 
 /// Depth of each per-process IPC queue (messages, not bytes).
 pub const IPC_QUEUE_DEPTH: usize = 32;
 
 struct IpcRing {
-    buf:  [KwmMsg; IPC_QUEUE_DEPTH],
+    buf:  [RwmMsg; IPC_QUEUE_DEPTH],
     head: usize, // index of next message to read
     tail: usize, // index of next slot to write
     len:  usize, // number of messages currently held
@@ -22,14 +22,14 @@ struct IpcRing {
 impl IpcRing {
     const fn new() -> Self {
         Self {
-            buf:  [KwmMsg::ZERO; IPC_QUEUE_DEPTH],
+            buf:  [RwmMsg::ZERO; IPC_QUEUE_DEPTH],
             head: 0,
             tail: 0,
             len:  0,
         }
     }
 
-    fn enqueue(&mut self, msg: KwmMsg) -> bool {
+    fn enqueue(&mut self, msg: RwmMsg) -> bool {
         if self.len == IPC_QUEUE_DEPTH {
             return false; // queue full
         }
@@ -39,7 +39,7 @@ impl IpcRing {
         true
     }
 
-    fn dequeue(&mut self) -> Option<KwmMsg> {
+    fn dequeue(&mut self) -> Option<RwmMsg> {
         if self.len == 0 {
             return None;
         }
@@ -62,7 +62,7 @@ static mut IPC_QUEUES: [IpcRing; MAX_PROCESSES] = [const { IpcRing::new() }; MAX
 /// Enqueue `msg` into the queue for process at table index `idx`.
 /// Returns `true` on success, `false` if the queue is full or `idx` is out of range.
 #[inline]
-pub fn ipc_enqueue(idx: usize, msg: KwmMsg) -> bool {
+pub fn ipc_enqueue(idx: usize, msg: RwmMsg) -> bool {
     if idx >= MAX_PROCESSES {
         return false;
     }
@@ -72,7 +72,7 @@ pub fn ipc_enqueue(idx: usize, msg: KwmMsg) -> bool {
 /// Dequeue the oldest message for process at table index `idx`.
 /// Returns `None` if the queue is empty or `idx` is out of range.
 #[inline]
-pub fn ipc_dequeue(idx: usize) -> Option<KwmMsg> {
+pub fn ipc_dequeue(idx: usize) -> Option<RwmMsg> {
     if idx >= MAX_PROCESSES {
         return None;
     }

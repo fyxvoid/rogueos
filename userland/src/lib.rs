@@ -5,11 +5,11 @@
 #![cfg_attr(not(test), deny(warnings))]
 
 pub mod backend_kernel;
-/// KDP (Kingdom Display Protocol) client library for graphical applications.
-pub mod kdp;
+/// RDP (Rogue Display Protocol) client library for graphical applications.
+pub mod rdp;
 
 use libs::{
-    KeyEvent, KwmMsg, ProcInfo,
+    KeyEvent, RwmMsg, ProcInfo,
     SYS_CLAIM_COMPOSITOR, SYS_CLOSE, SYS_COMPOSITE_ALL, SYS_EXIT,
     SYS_FB_BLIT, SYS_FB_CLEAR, SYS_FB_FILL_RECT, SYS_FB_FLUSH,
     SYS_FSYNC, SYS_GETPID, SYS_GET_COMPOSITOR_PID, SYS_GET_PROC_INFO,
@@ -432,18 +432,18 @@ pub fn sys_fb_blit(dst_x: u32, dst_y: u32, w: u32, h: u32, stride: u32, ptr: *co
 
 // ── IPC syscalls ─────────────────────────────────────────────────────────
 
-/// Send a KwmMsg to `target_pid`.
+/// Send a RwmMsg to `target_pid`.
 /// `flags`: 0 for blocking (blocks until queue has space), or IPC_NONBLOCK.
 /// Returns 0 on success, negative errno on error.
 #[inline(always)]
-pub fn sys_ipc_send(target_pid: u32, msg: &KwmMsg, flags: u32) -> isize {
+pub fn sys_ipc_send(target_pid: u32, msg: &RwmMsg, flags: u32) -> isize {
     let ret: isize;
     unsafe {
         core::arch::asm!(
             "syscall",
             in("rax") SYS_IPC_SEND,
             in("rdi") target_pid as u64,
-            in("rsi") msg as *const KwmMsg as u64,
+            in("rsi") msg as *const RwmMsg as u64,
             in("rdx") flags as u64,
             lateout("rax") ret,
             options(nostack, preserves_flags)
@@ -452,17 +452,17 @@ pub fn sys_ipc_send(target_pid: u32, msg: &KwmMsg, flags: u32) -> isize {
     ret
 }
 
-/// Receive the next KwmMsg for the calling process.
+/// Receive the next RwmMsg for the calling process.
 /// `flags`: 0 = block until a message arrives, IPC_NONBLOCK = return SYSERR_AGAIN immediately.
 /// Returns 0 on success (msg is filled), negative errno otherwise.
 #[inline(always)]
-pub fn sys_ipc_recv(out: &mut KwmMsg, flags: u32) -> isize {
+pub fn sys_ipc_recv(out: &mut RwmMsg, flags: u32) -> isize {
     let ret: isize;
     unsafe {
         core::arch::asm!(
             "syscall",
             in("rax") SYS_IPC_RECV,
-            in("rdi") out as *mut KwmMsg as u64,
+            in("rdi") out as *mut RwmMsg as u64,
             in("rsi") flags as u64,
             lateout("rax") ret,
             options(nostack, preserves_flags)
@@ -471,7 +471,7 @@ pub fn sys_ipc_recv(out: &mut KwmMsg, flags: u32) -> isize {
     ret
 }
 
-/// Claim compositor authority (KDP). Only the first caller succeeds.
+/// Claim compositor authority (RDP). Only the first caller succeeds.
 /// Returns 0 on success, negative errno if already claimed.
 #[inline(always)]
 pub fn sys_claim_compositor() -> isize {
@@ -503,7 +503,7 @@ pub fn sys_composite_all() -> isize {
     ret
 }
 
-/// Get the PID of the registered KDP compositor. Returns pid or negative errno.
+/// Get the PID of the registered RDP compositor. Returns pid or negative errno.
 #[inline(always)]
 pub fn sys_get_compositor_pid() -> isize {
     let ret: isize;

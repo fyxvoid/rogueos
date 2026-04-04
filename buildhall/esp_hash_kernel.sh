@@ -13,7 +13,7 @@ if [ ! -f "$ESP_DISK" ]; then
 fi
 
 if [ "$(id -u)" -eq 0 ]; then
-  MNT="${MNT:-/mnt/kingdom-esp}"
+  MNT="${MNT:-/mnt/rogueos-esp}"
   LOOPDEV=""
   cleanup() {
     if [ -n "$LOOPDEV" ]; then

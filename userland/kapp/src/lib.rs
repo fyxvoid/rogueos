@@ -1,6 +1,6 @@
-//! `kapp` — Kingdom OS application SDK
+//! `kapp` — RogueOS application SDK
 //!
-//! Provides the three building blocks every Kingdom app needs:
+//! Provides the three building blocks every RogueOS app needs:
 //!
 //! * [`App`]    — process identity + IPC state
 //! * [`Window`] — pixel buffer + WM registration
@@ -34,7 +34,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use libs::{
-    IPC_NONBLOCK, KwmMsg, KwmType,
+    IPC_NONBLOCK, RwmMsg, RwmType,
     PayloadGeometry, PayloadRegister, PayloadSetTitle, PayloadSurfaceCommit,
     SYSERR_AGAIN,
 };
@@ -55,7 +55,7 @@ pub struct App {
 impl App {
     /// Initialise the app, discover the WM, and register.
     ///
-    /// `wm_pid` is passed explicitly because Kingdom OS does not yet have a
+    /// `wm_pid` is passed explicitly because RogueOS does not yet have a
     /// name-service; the WM is always the first user process (pid 1 in the
     /// typical boot sequence).  Pass 0 to skip registration (standalone mode).
     pub fn new(title: &str, wm_pid: u32) -> Self {
@@ -78,12 +78,12 @@ impl App {
         let n = bytes.len().min(47);
         payload.title[..n].copy_from_slice(&bytes[..n]);
 
-        let msg = KwmMsg {
-            msg_type:   KwmType::Register as u8,
+        let msg = RwmMsg {
+            msg_type:   RwmType::Register as u8,
             flags:      0,
             seq:        self.next_seq(),
             sender_pid: self.pid,
-            payload:    libs::KwmPayload { register: payload },
+            payload:    libs::RwmPayload { register: payload },
         };
         let _ = sys_ipc_send(self.wm_pid, &msg, 0);
     }
@@ -95,31 +95,31 @@ impl App {
         let n = bytes.len().min(55);
         payload.title[..n].copy_from_slice(&bytes[..n]);
 
-        let msg = KwmMsg {
-            msg_type:   KwmType::SetTitle as u8,
+        let msg = RwmMsg {
+            msg_type:   RwmType::SetTitle as u8,
             flags:      0,
             seq:        self.next_seq(),
             sender_pid: self.pid,
-            payload:    libs::KwmPayload { set_title: payload },
+            payload:    libs::RwmPayload { set_title: payload },
         };
         let _ = sys_ipc_send(self.wm_pid, &msg, 0);
     }
 
     /// Send `KWM_UNREGISTER` and detach from the WM.
     pub fn unregister(&mut self) {
-        let msg = KwmMsg {
-            msg_type:   KwmType::Unregister as u8,
+        let msg = RwmMsg {
+            msg_type:   RwmType::Unregister as u8,
             flags:      0,
             seq:        self.next_seq(),
             sender_pid: self.pid,
-            payload:    libs::KwmPayload { raw: libs::PayloadRaw { data: [0u8; 56] } },
+            payload:    libs::RwmPayload { raw: libs::PayloadRaw { data: [0u8; 56] } },
         };
         let _ = sys_ipc_send(self.wm_pid, &msg, 0);
     }
 
     /// Non-blocking poll: return the next [`Event`] or [`Event::None`].
     pub fn poll_event(&mut self) -> Event {
-        let mut msg = KwmMsg::ZERO;
+        let mut msg = RwmMsg::ZERO;
         let ret = sys_ipc_recv(&mut msg, IPC_NONBLOCK);
         if ret == SYSERR_AGAIN as isize || ret < 0 {
             return Event::None;
@@ -241,12 +241,12 @@ impl Window {
             h:          self.h,
             _pad:       [0u8; 36],
         };
-        let msg = KwmMsg {
-            msg_type:   KwmType::SurfaceCommit as u8,
+        let msg = RwmMsg {
+            msg_type:   RwmType::SurfaceCommit as u8,
             flags:      0,
             seq:        app.next_seq(),
             sender_pid: app.pid,
-            payload:    libs::KwmPayload { surface_commit: payload },
+            payload:    libs::RwmPayload { surface_commit: payload },
         };
         let _ = sys_ipc_send(app.wm_pid, &msg, 0);
     }
@@ -273,29 +273,29 @@ pub enum Event {
     None,
 }
 
-fn decode_event(msg: &KwmMsg) -> Event {
+fn decode_event(msg: &RwmMsg) -> Event {
     match msg.msg_type {
-        t if t == KwmType::EventKey as u8 => {
+        t if t == RwmType::EventKey as u8 => {
             let p = unsafe { msg.payload.event_key };
             Event::Key(p.keycode, p.pressed != 0)
         }
-        t if t == KwmType::EventMouse as u8 => {
+        t if t == RwmType::EventMouse as u8 => {
             let p = unsafe { msg.payload.event_mouse };
             Event::Mouse(p.abs_x, p.abs_y, p.dx, p.dy, p.buttons)
         }
-        t if t == KwmType::EventResize as u8 => {
+        t if t == RwmType::EventResize as u8 => {
             let p = unsafe { msg.payload.event_resize };
             Event::Resize(p.w, p.h)
         }
-        t if t == KwmType::EventFocus as u8 => {
+        t if t == RwmType::EventFocus as u8 => {
             let p = unsafe { msg.payload.event_focus };
             Event::Focus(p.focused != 0)
         }
-        t if t == KwmType::Geometry as u8 => {
+        t if t == RwmType::Geometry as u8 => {
             let p = unsafe { msg.payload.geometry };
             Event::Geometry(p.x, p.y, p.w, p.h)
         }
-        t if t == KwmType::Unregister as u8 => Event::Close,
+        t if t == RwmType::Unregister as u8 => Event::Close,
         _ => Event::None,
     }
 }

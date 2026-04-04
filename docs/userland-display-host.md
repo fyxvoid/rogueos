@@ -1,6 +1,6 @@
 # Userland display stack (unified userland)
 
-This document describes the **unified userland** (single program: server + compositor + WM + utils), how to run and test it, and how it relates to the Kingdom kernel.
+This document describes the **unified userland** (single program: server + compositor + WM + utils), how to run and test it, and how it relates to the RogueOS kernel.
 
 ## Unified userland layout
 
@@ -10,20 +10,20 @@ This document describes the **unified userland** (single program: server + compo
 | **userland/server** | Display server abstraction; holds backend, exposes `commit` and `backend_mut`. |
 | **userland/compositor** | Compositor: transparency and rounded corners (config-driven, shortcut-adjustable). |
 | **userland/wm** | Window list, focus, shortcut → action mapping. |
-| **userland/utils** | Screenshot, lock, clipboard (stubs on Kingdom; logic can be added for host). |
+| **userland/utils** | Screenshot, lock, clipboard (stubs on RogueOS; logic can be added for host). |
 | **session** binary | Main binary: runs server + compositor + WM in one process; handles input and shortcuts. |
 | **init** binary | Spawns only the **session** binary (program_id 1). |
 
-On **Kingdom** (target `x86_64-unknown-none`), the session uses the **kernel backend** (`sys_fb_*`). On host, a future **host backend** (X11 or headless) would allow the same code to run without the kernel.
+On **RogueOS** (target `x86_64-unknown-none`), the session uses the **kernel backend** (`sys_fb_*`). On host, a future **host backend** (X11 or headless) would allow the same code to run without the kernel.
 
 ## Roles: kernel vs userland
 
 | Component      | Kernel | Userland |
 |----------------|--------|----------|
-| Display server | **Director** (manages surfaces/buffers). | **server** crate: owns `DisplayBackend`; on Kingdom uses `sys_fb_*`. |
+| Display server | **Director** (manages surfaces/buffers). | **server** crate: owns `DisplayBackend`; on RogueOS uses `sys_fb_*`. |
 | Compositor     | **Painter** (kernel compositor). | **compositor** crate: transparency, rounded corners. |
 | WM             | — | **wm** crate: focus, shortcuts. |
-| Utils          | — | **utils** crate: screenshot, lock, clipboard (stubs on Kingdom). |
+| Utils          | — | **utils** crate: screenshot, lock, clipboard (stubs on RogueOS). |
 
 ## How to run and test
 
@@ -45,7 +45,7 @@ This runs `cargo test -p userland-core -p userland-compositor` (config clamp, co
 
 Runs tests for libs, userland-core, userland-compositor.
 
-### Build session and init (Kingdom target)
+### Build session and init (RogueOS target)
 
 ```bash
 cargo build -p userland --target x86_64-unknown-none --release --bin session --bin init

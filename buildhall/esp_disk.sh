@@ -54,7 +54,7 @@ if [ "$(id -u)" -eq 0 ]; then
   fi
   echo "[esp_disk] formatting EFI System partition as FAT32..."
   mkfs.fat -F32 "$PART" >/dev/null
-  MNT="/mnt/kingdom-esp"
+  MNT="/mnt/rogueos-esp"
   mkdir -p "$MNT"
   echo "[esp_disk] mounting $PART at $MNT..."
   mount "$PART" "$MNT"

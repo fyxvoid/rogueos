@@ -37,7 +37,7 @@ mkdir -p "$(dirname "$EFI_IMG")" "$(dirname "$ISO_OUT")"
 # Create FAT32 EFI system partition image (32 MiB)
 echo "Creating FAT image $EFI_IMG..."
 dd if=/dev/zero of="$EFI_IMG" bs=1M count=32 status=none
-mformat -F -v "KINGDOM" -i "$EFI_IMG" ::
+mformat -F -v "ROGUEOS" -i "$EFI_IMG" ::
 mmd -i "$EFI_IMG" ::EFI
 mmd -i "$EFI_IMG" ::EFI/BOOT
 mcopy -i "$EFI_IMG" "$BUILD_DIR/kernel.elf" ::kernel.elf

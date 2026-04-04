@@ -1,4 +1,4 @@
-//! Display backend trait: same code runs on Kingdom (sys_fb_*) or host (X11).
+//! Display backend trait: same code runs on RogueOS (sys_fb_*) or host (X11).
 //! Input is handled by main loop (sys_poll_input or X11); backend only draws.
 
 /// Display backend: clear, fill_rect, flush, screen size.

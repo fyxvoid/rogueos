@@ -1,4 +1,4 @@
-### Kingdom OS — Status vs Modern Requirements
+### RogueOS — Status vs Modern Requirements
 
 #### Build & tooling
 

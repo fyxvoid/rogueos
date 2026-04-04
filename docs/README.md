@@ -1,4 +1,4 @@
-# Kingdom OS — Documentation Index
+# RogueOS — Documentation Index
 
 ---
 
@@ -7,7 +7,7 @@
 | Document | Description |
 |----------|-------------|
 | [syscall-abi.md](syscall-abi.md) | Complete syscall table: namespaces, arguments, return values, error codes |
-| [ipc.md](ipc.md) | IPC message format, all KwmMsg types, payload layouts, usage examples |
+| [ipc.md](ipc.md) | IPC message format, all RwmMsg types, payload layouts, usage examples |
 | [cogman.md](cogman.md) | Cogman init supervisor: service table, restart policies, control protocol |
 
 ## Architecture
@@ -42,5 +42,5 @@
 
 - **Main README:** [../README.md](../README.md) — overview, build instructions, boot sequence
 - **Full Roadmap:** [../ROADMAP.md](../ROADMAP.md) — 10-phase development plan
-- **Shared ABI source:** [../lib/src/lib.rs](../lib/src/lib.rs) — all syscall numbers, KwmMsg, BootInfo
+- **Shared ABI source:** [../lib/src/lib.rs](../lib/src/lib.rs) — all syscall numbers, RwmMsg, BootInfo
 - **Cogman source:** [../userland/src/bin/cogman.rs](../userland/src/bin/cogman.rs)

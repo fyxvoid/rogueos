@@ -1,4 +1,4 @@
-//! KDP (Kingdom Display Protocol) client library.
+//! RDP (Rogue Display Protocol) client library.
 //!
 //! Provides a simple surface-backed window that renders into its own pixel
 //! buffer and notifies the compositor via IPC when the buffer is updated.
@@ -6,7 +6,7 @@
 //! # Typical usage
 //!
 //! ```no_run
-//! let mut surface = KdpSurface::connect(b"my-app");
+//! let mut surface = RdpSurface::connect(b"my-app");
 //! // surface.width() / surface.height() are set by the compositor.
 //! loop {
 //!     // Render into surface.buf_mut() ...
@@ -17,21 +17,21 @@
 //! }
 //! ```
 
-use libs::{IPC_NONBLOCK, KwmMsg};
+use libs::{IPC_NONBLOCK, RwmMsg};
 use crate::{
     sys_get_compositor_pid, sys_ipc_recv, sys_ipc_send,
     sys_surface_attach, sys_surface_create, sys_surface_destroy,
 };
 
-// KDP KwmType byte constants (mirror libs::KwmType repr).
-const KDP_CONNECT:    u8 = 0x50;
-const KDP_GRANT:      u8 = 0x51;
-const KDP_COMMIT:     u8 = 0x52;
-const KDP_RESIZE:     u8 = 0x53;
-const KDP_KEY:        u8 = 0x54;
-const KDP_FOCUS:      u8 = 0x55;
-const KDP_CLOSE:      u8 = 0x56;
-const KDP_DISCONNECT: u8 = 0x57;
+// RDP RwmType byte constants (mirror libs::RwmType repr).
+const RDP_CONNECT:    u8 = 0x50;
+const RDP_GRANT:      u8 = 0x51;
+const RDP_COMMIT:     u8 = 0x52;
+const RDP_RESIZE:     u8 = 0x53;
+const RDP_KEY:        u8 = 0x54;
+const RDP_FOCUS:      u8 = 0x55;
+const RDP_CLOSE:      u8 = 0x56;
+const RDP_DISCONNECT: u8 = 0x57;
 
 /// Kind of event received from the compositor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,14 +46,14 @@ pub enum EventKind {
     Close,
 }
 
-/// An event delivered by the compositor to this KDP window.
-pub struct KdpEvent {
+/// An event delivered by the compositor to this RDP window.
+pub struct RdpEvent {
     pub kind: EventKind,
 }
 
-/// A KDP window — connects to the compositor, manages a pixel buffer, and
+/// A RDP window — connects to the compositor, manages a pixel buffer, and
 /// handles compositor events.
-pub struct KdpSurface {
+pub struct RdpSurface {
     compositor_pid: u32,
     surface_id:     u32,
     #[allow(dead_code)]
@@ -65,9 +65,9 @@ pub struct KdpSurface {
     seq:            u16,
 }
 
-impl KdpSurface {
+impl RdpSurface {
     /// Connect to the compositor and request a window with the given title.
-    /// Blocks until the compositor sends a KdpGrant response.
+    /// Blocks until the compositor sends a RdpGrant response.
     /// Returns `None` if no compositor is registered or surface creation fails.
     pub fn connect(title: &[u8]) -> Option<Self> {
         // Find compositor PID.
@@ -84,10 +84,10 @@ impl KdpSurface {
         }
         let surface_id = sid_r as u32;
 
-        // Build KdpConnect message.
-        let mut msg = KwmMsg::ZERO;
-        msg.msg_type = KDP_CONNECT;
-        let kdp = unsafe { &mut msg.payload.kdp };
+        // Build RdpConnect message.
+        let mut msg = RwmMsg::ZERO;
+        msg.msg_type = RDP_CONNECT;
+        let kdp = unsafe { &mut msg.payload.rdp };
         kdp.surface_id = surface_id;
         kdp.flags = 0;
         let n = title.len().min(kdp.title.len() - 1);
@@ -99,16 +99,16 @@ impl KdpSurface {
             return None;
         }
 
-        // Wait for KdpGrant.
-        let mut reply = KwmMsg::ZERO;
+        // Wait for RdpGrant.
+        let mut reply = RwmMsg::ZERO;
         loop {
-            if sys_ipc_recv(&mut reply, 0) == 0 && reply.msg_type == KDP_GRANT {
+            if sys_ipc_recv(&mut reply, 0) == 0 && reply.msg_type == RDP_GRANT {
                 break;
             }
         }
-        let g = unsafe { reply.payload.kdp };
+        let g = unsafe { reply.payload.rdp };
 
-        Some(KdpSurface {
+        Some(RdpSurface {
             compositor_pid,
             surface_id,
             x:      g.x,
@@ -130,51 +130,51 @@ impl KdpSurface {
     pub fn commit(&mut self, buf: *const u8, stride: u32) {
         let _ = sys_surface_attach(self.surface_id, buf, self.width, self.height, stride);
 
-        let mut msg = KwmMsg::ZERO;
-        msg.msg_type = KDP_COMMIT;
+        let mut msg = RwmMsg::ZERO;
+        msg.msg_type = RDP_COMMIT;
         msg.seq = self.seq;
         self.seq = self.seq.wrapping_add(1);
-        let kdp = unsafe { &mut msg.payload.kdp };
+        let kdp = unsafe { &mut msg.payload.rdp };
         kdp.surface_id = self.surface_id;
         let _ = sys_ipc_send(self.compositor_pid, &msg, 0);
     }
 
     /// Poll for an event from the compositor (non-blocking).
     /// Returns `None` immediately if no event is queued.
-    pub fn poll_event(&self) -> Option<KdpEvent> {
-        let mut msg = KwmMsg::ZERO;
+    pub fn poll_event(&self) -> Option<RdpEvent> {
+        let mut msg = RwmMsg::ZERO;
         if sys_ipc_recv(&mut msg, IPC_NONBLOCK) < 0 {
             return None;
         }
-        let kdp = unsafe { msg.payload.kdp };
+        let kdp = unsafe { msg.payload.rdp };
         match msg.msg_type {
-            KDP_KEY => Some(KdpEvent {
+            RDP_KEY => Some(RdpEvent {
                 kind: EventKind::Key {
                     keycode: kdp.key_code,
                     pressed: kdp.key_state != 0,
                 },
             }),
-            KDP_FOCUS => Some(KdpEvent {
+            RDP_FOCUS => Some(RdpEvent {
                 kind: EventKind::Focus(kdp.flags != 0),
             }),
-            KDP_RESIZE => {
-                Some(KdpEvent {
+            RDP_RESIZE => {
+                Some(RdpEvent {
                     kind: EventKind::Resize {
                         width:  kdp.width,
                         height: kdp.height,
                     },
                 })
             }
-            KDP_CLOSE => Some(KdpEvent { kind: EventKind::Close }),
+            RDP_CLOSE => Some(RdpEvent { kind: EventKind::Close }),
             _ => None,
         }
     }
 
     /// Disconnect from the compositor and destroy the surface.
     pub fn disconnect(self) {
-        let mut msg = KwmMsg::ZERO;
-        msg.msg_type = KDP_DISCONNECT;
-        let kdp = unsafe { &mut msg.payload.kdp };
+        let mut msg = RwmMsg::ZERO;
+        msg.msg_type = RDP_DISCONNECT;
+        let kdp = unsafe { &mut msg.payload.rdp };
         kdp.surface_id = self.surface_id;
         let _ = sys_ipc_send(self.compositor_pid, &msg, 0);
         let _ = sys_surface_destroy(self.surface_id);

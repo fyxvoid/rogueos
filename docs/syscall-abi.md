@@ -1,6 +1,6 @@
 # Syscall ABI Reference
 
-Kingdom uses the x86_64 `SYSCALL`/`SYSRET` fast path. Syscall numbers are defined in `lib/src/lib.rs` and shared between kernel and userland.
+RogueOS uses the x86_64 `SYSCALL`/`SYSRET` fast path. Syscall numbers are defined in `lib/src/lib.rs` and shared between kernel and userland.
 
 ---
 
@@ -242,7 +242,7 @@ rdx: options (u32)  [WNOHANG = 0x01]
 ### `SYS_IPC_SEND` = 0x320
 ```
 rdi: target_pid (u32)
-rsi: msg (*const KwmMsg)   [64 bytes]
+rsi: msg (*const RwmMsg)   [64 bytes]
 rdx: flags (u32)           [0 = block if queue full; IPC_NONBLOCK = 0x01]
 →   0, SYSERR_NOMEM (queue full), or SYSERR_NOENT (no such pid)
 ```
@@ -250,7 +250,7 @@ The kernel fills `msg.sender_pid` with the calling process's PID.
 
 ### `SYS_IPC_RECV` = 0x321
 ```
-rdi: out (*mut KwmMsg)   [64 bytes]
+rdi: out (*mut RwmMsg)   [64 bytes]
 rsi: flags (u32)         [0 = block; IPC_NONBLOCK = 0x01]
 →   0 (msg written), or SYSERR_AGAIN (queue empty, non-blocking)
 ```

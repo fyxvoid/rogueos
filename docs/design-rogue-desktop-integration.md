@@ -1,11 +1,11 @@
-# Rogue Desktop ↔ Kingdom OS Integration Design
+# Rogue Desktop ↔ RogueOS Integration Design
 
 ## TL;DR
 
-**rogue-desktop is X11/Wayland-native. It cannot run on Kingdom OS directly.**
+**rogue-desktop is X11/Wayland-native. It cannot run on RogueOS directly.**
 Its *algorithms* (layout engine, compositor effects) are already ported to
-`kingdom/userland/`. The integration work is wiring those pieces together through
-Kingdom's kernel Surface API instead of through an X server.
+`rogueos/userland/`. The integration work is wiring those pieces together through
+RogueOS's kernel Surface API instead of through an X server.
 
 A **display server and compositor are both needed** — see rationale below.
 
@@ -13,7 +13,7 @@ A **display server and compositor are both needed** — see rationale below.
 
 ## What rogue-desktop contains
 
-| Component | Protocol | Portable to Kingdom? | Status |
+| Component | Protocol | Portable to RogueOS? | Status |
 |-----------|----------|---------------------|--------|
 | `rogue-desktop/` (main WM) | X11 (`x11rb`, EWMH) | ❌ No — needs X server | Algorithms ported to `userland/rwm-core/` |
 | `dwm-rs/` | X11 (`x11rb`) | ❌ No — needs X server | Ported to `userland/dwm-rs/` + `wm.rs` |
@@ -25,8 +25,8 @@ A **display server and compositor are both needed** — see rationale below.
 | Compositor effects | None | ✅ Pure CPU render | Live in `userland/compositor/src/lib.rs` |
 | 9-tag workspace model | None | ✅ Pure logic | Live in `userland/wm.rs` and `rwm-core/` |
 
-**Bottom line:** All the *logic* from rogue-desktop is already in kingdom/userland.
-The X11/Wayland *protocol glue* is replaced by Kingdom's custom IPC (KwmMsg) and
+**Bottom line:** All the *logic* from rogue-desktop is already in rogueos/userland.
+The X11/Wayland *protocol glue* is replaced by RogueOS's custom IPC (RwmMsg) and
 the kernel Surface API (SYS_SURFACE_*).
 
 ---
@@ -40,14 +40,14 @@ and draws fake placeholder windows. Real apps cannot draw their own content.
 A proper display server solves this:
 
 ```
-App A ──KwmMsg::Register─────────────────────────┐
-App B ──KwmMsg::Register──────────────────────────▼
+App A ──RwmMsg::Register─────────────────────────┐
+App B ──RwmMsg::Register──────────────────────────▼
                                          Display Server (userland)
-App A ←─KwmMsg::Geometry (x,y,w,h)               │
-App B ←─KwmMsg::Geometry (x,y,w,h)               │  Layout engine (rwm-core)
+App A ←─RwmMsg::Geometry (x,y,w,h)               │
+App B ←─RwmMsg::Geometry (x,y,w,h)               │  Layout engine (rwm-core)
                                                   │
-App A ──KwmMsg::SurfaceCommit(id, x,y,w,h)──────►│
-App B ──KwmMsg::SurfaceCommit(id, x,y,w,h)──────►│
+App A ──RwmMsg::SurfaceCommit(id, x,y,w,h)──────►│
+App B ──RwmMsg::SurfaceCommit(id, x,y,w,h)──────►│
                                                   │  SYS_SURFACE_ATTACH + COMMIT
                                                   ▼
                                         Kernel Display Server
@@ -84,10 +84,10 @@ commit. The kernel is NOT the right place for alpha blending or decoration drawi
 ┌─────────────────────────────────────────────────────────────────┐
 │  USERLAND                                                        │
 │                                                                  │
-│  ┌──────────┐   KwmMsg IPC    ┌────────────────────────────┐   │
+│  ┌──────────┐   RwmMsg IPC    ┌────────────────────────────┐   │
 │  │  App A   │◄───────────────►│                            │   │
 │  └──────────┘                 │   rogue_ds                 │   │
-│  ┌──────────┐   KwmMsg IPC    │   (Display Server binary)  │   │
+│  ┌──────────┐   RwmMsg IPC    │   (Display Server binary)  │   │
 │  │  App B   │◄───────────────►│                            │   │
 │  └──────────┘                 │  ┌──────────────────────┐  │   │
 │                               │  │  WM (rwm-core)       │  │   │
@@ -124,9 +124,9 @@ commit. The kernel is NOT the right place for alpha blending or decoration drawi
 
 ## What "integrate" means concretely
 
-### 1. Already done (rogue-desktop → kingdom/userland)
+### 1. Already done (rogue-desktop → rogueos/userland)
 
-| rogue-desktop | kingdom/userland equivalent | State |
+| rogue-desktop | rogueos/userland equivalent | State |
 |---------------|-----------------------------|-------|
 | `rwm-core` layouts | `userland/rwm-core/src/layout.rs` | ✅ Complete (7 layouts) |
 | 9-tag workspace | `userland/wm.rs` Wm struct | ✅ Complete |
@@ -151,7 +151,7 @@ commit. The kernel is NOT the right place for alpha blending or decoration drawi
 | rogue-desktop piece | Why excluded |
 |---------------------|-------------|
 | `rogue-compositor/` (Smithay) | Requires Linux + Wayland socket. Replaced by kernel Surface API. |
-| `rwm-x11` | Requires X server. Replaced by KwmMsg IPC. |
+| `rwm-x11` | Requires X server. Replaced by RwmMsg IPC. |
 | `rwm-bar` (X11 drawing) | Replaced by framebuffer bar in `wm.rs`. |
 | `rwm-plugin` (Lua) | `mlua` links against glibc. Excluded until no_std Lua port exists. |
 | `rogue-lock` PAM auth | `libpam-sys` requires glibc. Lock binary uses fallback PIN. |
@@ -187,16 +187,16 @@ the surface protocol entirely. Fixed in this session.
                          bg_surf  = SYS_SURFACE_CREATE()
 
 2. App connects:
-   - App calls SYS_IPC_SEND(ds_pid, KwmMsg::Register { title, flags })
+   - App calls SYS_IPC_SEND(ds_pid, RwmMsg::Register { title, flags })
    - rogue_ds receives via SYS_IPC_RECV
    - rogue_ds calls SYS_SURFACE_CREATE() → win_surf_id
-   - rogue_ds calls SYS_IPC_SEND(app_pid, KwmMsg::Geometry { x,y,w,h })
-   - rogue_ds calls SYS_IPC_SEND(app_pid, KwmMsg::SurfaceAssign { surface_id })
+   - rogue_ds calls SYS_IPC_SEND(app_pid, RwmMsg::Geometry { x,y,w,h })
+   - rogue_ds calls SYS_IPC_SEND(app_pid, RwmMsg::SurfaceAssign { surface_id })
 
 3. App renders:
    - App draws into its local pixel buffer (heap-allocated)
    - App calls SYS_SURFACE_ATTACH(win_surf_id, buf_ptr, w, h, stride)
-   - App calls SYS_IPC_SEND(ds_pid, KwmMsg::SurfaceCommit { surface_id, x, y, w, h })
+   - App calls SYS_IPC_SEND(ds_pid, RwmMsg::SurfaceCommit { surface_id, x, y, w, h })
 
 4. rogue_ds composites (each input event or on timer):
    - calls SYS_SURFACE_ATTACH(bg_surf, bg_buf, sw, sh, sw*4)
@@ -209,7 +209,7 @@ the surface protocol entirely. Fixed in this session.
 
 5. Input dispatch:
    - rogue_ds polls sys_poll_input() / sys_poll_mouse()
-   - routes KwmMsg::EventKey to focused app via SYS_IPC_SEND
+   - routes RwmMsg::EventKey to focused app via SYS_IPC_SEND
    - WM shortcuts handled internally (Mod+keys)
 ```
 
@@ -235,7 +235,7 @@ and the WM composites into a merged buffer before calling ATTACH+COMMIT.
 ## Files written in this session
 
 ```
-kingdom/
+rogueos/
   docs/
     design-rogue-desktop-integration.md    ← this file
   kernel/

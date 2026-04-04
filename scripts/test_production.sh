@@ -22,7 +22,7 @@ run_stage() {
   fi
 }
 
-echo "=== Kingdom production test suite ==="
+echo "=== RogueOS production test suite ==="
 
 if [ -z "$SKIP_BUILD" ]; then
   echo "=== Build (UEFI + GRUB) ==="

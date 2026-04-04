@@ -75,7 +75,7 @@ struct MinifbBackend {
 impl MinifbBackend {
     fn new(w: usize, h: usize) -> Self {
         let window = Window::new(
-            "Kingdom OS — RogueWM",
+            "RogueOS — RogueWM",
             w, h,
             WindowOptions { scale: Scale::X1, resize: false, ..Default::default() },
         ).expect("failed to open window");
@@ -411,7 +411,7 @@ fn draw_bar(fb: &mut MinifbBackend, state: &WmState, show_bar: bool) {
     }
 
     // ── Right: status text ────────────────────────────────────────────────────
-    let status = "kingdom-os";
+    let status = "rogueos-os";
     let sw = str_w1(status);
     let rx = fb.w.saturating_sub(sw + 10);
     draw_str1(fb, rx, text_y1, status, C_OVERLAY0);

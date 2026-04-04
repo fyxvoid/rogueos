@@ -7,13 +7,13 @@
 #
 # Notes:
 # - Uses a serial log file for debugging: build/vbox-serial.log
-# - Creates/updates a VM named by VM_NAME (default: KingdomOS)
+# - Creates/updates a VM named by VM_NAME (default: RogueOS)
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-VM_NAME="${VM_NAME:-KingdomOS}"
+VM_NAME="${VM_NAME:-RogueOS}"
 ISO="${ISO:-$ROOT/build/os.iso}"
 SERIAL_LOG="${SERIAL_LOG:-$ROOT/build/vbox-serial.log}"
 

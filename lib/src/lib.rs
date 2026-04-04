@@ -50,10 +50,10 @@ pub const SYS_COMPOSITE_ALL: u64 = 0x217;
 pub const SYS_GET_COMPOSITOR_PID: u64 = 0x218;
 
 /// IPC syscalls (namespace 0x320).
-/// Send a KwmMsg to target process. Args: target_pid (u32), msg_ptr (*const KwmMsg), flags (u32).
+/// Send a RwmMsg to target process. Args: target_pid (u32), msg_ptr (*const RwmMsg), flags (u32).
 /// Returns 0 on success, SYSERR_NOMEM if target queue full, SYSERR_NOENT if no such pid.
 pub const SYS_IPC_SEND: u64 = 0x320;
-/// Receive next KwmMsg for this process. Args: out_ptr (*mut KwmMsg), flags (u32).
+/// Receive next RwmMsg for this process. Args: out_ptr (*mut RwmMsg), flags (u32).
 /// Returns 0 on success, SYSERR_AGAIN if queue empty (non-blocking), blocks if IPC_NONBLOCK not set.
 pub const SYS_IPC_RECV: u64 = 0x321;
 
@@ -97,7 +97,7 @@ pub const SYSERR_AGAIN: i64 = -11;
 /// KWM IPC message type byte.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KwmType {
+pub enum RwmType {
     // App → WM
     /// App introduces itself to the WM; carries PayloadRegister.
     Register      = 0x01,
@@ -139,23 +139,23 @@ pub enum KwmType {
     CogResp       = 0x44,
     /// Restart a running or stopped service.
     CogRestart    = 0x45,
-    // KDP (Kingdom Display Protocol) — secure compositor/window protocol (0x50–0x5F)
-    /// Client → compositor: request a window. Carries PayloadKdp (surface_id, flags, title).
-    KdpConnect    = 0x50,
-    /// Compositor → client: window assigned. Carries PayloadKdp (surface_id, x, y, width, height).
-    KdpGrant      = 0x51,
-    /// Client → compositor: pixel buffer updated. Carries PayloadKdp (surface_id).
-    KdpCommit     = 0x52,
-    /// Compositor → client: please resize. Carries PayloadKdp (surface_id, width, height).
-    KdpResize     = 0x53,
-    /// Compositor → client: key event. Carries PayloadKdp (key_code, key_state).
-    KdpKey        = 0x54,
-    /// Compositor → client: focus changed. Carries PayloadKdp (flags: 1=gained, 0=lost).
-    KdpFocus      = 0x55,
-    /// Compositor → client: please close gracefully. Carries PayloadKdp (surface_id).
-    KdpClose      = 0x56,
-    /// Client → compositor: window is closing. Carries PayloadKdp (surface_id).
-    KdpDisconnect = 0x57,
+    // RDP (Rogue Display Protocol) — secure compositor/window protocol (0x50–0x5F)
+    /// Client → compositor: request a window. Carries PayloadRdp (surface_id, flags, title).
+    RdpConnect    = 0x50,
+    /// Compositor → client: window assigned. Carries PayloadRdp (surface_id, x, y, width, height).
+    RdpGrant      = 0x51,
+    /// Client → compositor: pixel buffer updated. Carries PayloadRdp (surface_id).
+    RdpCommit     = 0x52,
+    /// Compositor → client: please resize. Carries PayloadRdp (surface_id, width, height).
+    RdpResize     = 0x53,
+    /// Compositor → client: key event. Carries PayloadRdp (key_code, key_state).
+    RdpKey        = 0x54,
+    /// Compositor → client: focus changed. Carries PayloadRdp (flags: 1=gained, 0=lost).
+    RdpFocus      = 0x55,
+    /// Compositor → client: please close gracefully. Carries PayloadRdp (surface_id).
+    RdpClose      = 0x56,
+    /// Client → compositor: window is closing. Carries PayloadRdp (surface_id).
+    RdpDisconnect = 0x57,
 }
 
 // ── KWM payload structs (each exactly 56 bytes) ───────────────────────────
@@ -252,23 +252,23 @@ pub struct PayloadRaw {
     pub data: [u8; 56],
 }
 
-/// KDP (Kingdom Display Protocol) window/compositor payload (56 bytes).
+/// RDP (Rogue Display Protocol) window/compositor payload (56 bytes).
 ///
-/// Direction depends on `KwmMsg::msg_type`:
-/// - KdpConnect    (client → compositor): surface_id, flags, title
-/// - KdpGrant      (compositor → client): surface_id, x, y, width, height
-/// - KdpCommit     (client → compositor): surface_id
-/// - KdpResize     (compositor → client): surface_id, width, height
-/// - KdpKey        (compositor → client): key_code, key_state
-/// - KdpFocus      (compositor → client): flags (1=focused, 0=blur)
-/// - KdpClose      (compositor → client): surface_id
-/// - KdpDisconnect (client → compositor): surface_id
+/// Direction depends on `RwmMsg::msg_type`:
+/// - RdpConnect    (client → compositor): surface_id, flags, title
+/// - RdpGrant      (compositor → client): surface_id, x, y, width, height
+/// - RdpCommit     (client → compositor): surface_id
+/// - RdpResize     (compositor → client): surface_id, width, height
+/// - RdpKey        (compositor → client): key_code, key_state
+/// - RdpFocus      (compositor → client): flags (1=focused, 0=blur)
+/// - RdpClose      (compositor → client): surface_id
+/// - RdpDisconnect (client → compositor): surface_id
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct PayloadKdp {
+pub struct PayloadRdp {
     /// Kernel surface ID (from SYS_SURFACE_CREATE, owned by the client).
     pub surface_id: u32,
-    /// Window x (compositor → client in KdpGrant).
+    /// Window x (compositor → client in RdpGrant).
     pub x:          i32,
     /// Window y.
     pub y:          i32,
@@ -276,13 +276,13 @@ pub struct PayloadKdp {
     pub width:      u32,
     /// Window height.
     pub height:     u32,
-    /// Flags: KdpConnect hint bits; KdpFocus: 1=gained 0=lost; others: 0.
+    /// Flags: RdpConnect hint bits; RdpFocus: 1=gained 0=lost; others: 0.
     pub flags:      u32,
-    /// Keycode forwarded to client (KdpKey).
+    /// Keycode forwarded to client (RdpKey).
     pub key_code:   u32,
-    /// Key state: 1=pressed, 0=released (KdpKey).
+    /// Key state: 1=pressed, 0=released (RdpKey).
     pub key_state:  u32,
-    /// NUL-terminated window title (client fills on KdpConnect; compositor echoes in KdpGrant).
+    /// NUL-terminated window title (client fills on RdpConnect; compositor echoes in RdpGrant).
     pub title:      [u8; 24],
 }
 
@@ -314,13 +314,13 @@ pub struct PayloadCogCtrl {
     pub _pad:          [u8; 28],
 }
 
-/// 56-byte payload union — pick the variant matching KwmMsg::msg_type.
+/// 56-byte payload union — pick the variant matching RwmMsg::msg_type.
 ///
 /// Safety: All variants are the same size and purely numeric; any bit pattern
 /// is valid for whichever variant you read.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub union KwmPayload {
+pub union RwmPayload {
     pub register:        PayloadRegister,
     pub set_title:       PayloadSetTitle,
     pub surface_commit:  PayloadSurfaceCommit,
@@ -331,11 +331,11 @@ pub union KwmPayload {
     pub event_focus:     PayloadEventFocus,
     pub event_resize:    PayloadEventResize,
     pub cog_ctrl:        PayloadCogCtrl,
-    pub kdp:             PayloadKdp,
+    pub rdp:             PayloadRdp,
     pub raw:             PayloadRaw,
 }
 
-/// Fixed 64-byte IPC message between Kingdom OS applications and the WM.
+/// Fixed 64-byte IPC message between RogueOS applications and the WM.
 ///
 /// Cache-line aligned so that enqueue/dequeue is always a single cache-line
 /// operation. Compatible with C via `#[repr(C)]`.
@@ -351,31 +351,31 @@ pub union KwmPayload {
 /// ```
 #[repr(C, align(64))]
 #[derive(Clone, Copy)]
-pub struct KwmMsg {
+pub struct RwmMsg {
     pub msg_type:   u8,
     pub flags:      u8,
     /// Monotonically-increasing sequence number; wraps at u16::MAX.
     pub seq:        u16,
     /// PID of the sending process (filled by kernel on SYS_IPC_SEND).
     pub sender_pid: u32,
-    pub payload:    KwmPayload,
+    pub payload:    RwmPayload,
 }
 
-impl KwmMsg {
-    /// A zeroed KwmMsg — safe to use as a stack buffer for SYS_IPC_RECV.
-    pub const ZERO: KwmMsg = KwmMsg {
+impl RwmMsg {
+    /// A zeroed RwmMsg — safe to use as a stack buffer for SYS_IPC_RECV.
+    pub const ZERO: RwmMsg = RwmMsg {
         msg_type:   0,
         flags:      0,
         seq:        0,
         sender_pid: 0,
-        payload:    KwmPayload { raw: PayloadRaw { data: [0u8; 56] } },
+        payload:    RwmPayload { raw: PayloadRaw { data: [0u8; 56] } },
     };
 }
 
-const _: () = assert!(core::mem::size_of::<KwmMsg>() == 64);
-const _: () = assert!(core::mem::size_of::<KwmPayload>() == 56);
+const _: () = assert!(core::mem::size_of::<RwmMsg>() == 64);
+const _: () = assert!(core::mem::size_of::<RwmPayload>() == 56);
 const _: () = assert!(core::mem::size_of::<PayloadCogCtrl>() == 56);
-const _: () = assert!(core::mem::size_of::<PayloadKdp>() == 56);
+const _: () = assert!(core::mem::size_of::<PayloadRdp>() == 56);
 
 /// Process and debug syscalls (namespace 0x300).
 /// Debug: dump page tables for address range. Args: cr3 (a1), va_start (a2), va_end (a3).
@@ -631,8 +631,8 @@ mod tests {
 
     #[test]
     fn test_kwmmsg_size() {
-        assert_eq!(core::mem::size_of::<KwmMsg>(), 64);
-        assert_eq!(core::mem::size_of::<KwmPayload>(), 56);
+        assert_eq!(core::mem::size_of::<RwmMsg>(), 64);
+        assert_eq!(core::mem::size_of::<RwmPayload>(), 56);
     }
 
     #[test]
@@ -645,12 +645,12 @@ mod tests {
         assert_eq!(core::mem::size_of::<PayloadEventMouse>(), 56);
         assert_eq!(core::mem::size_of::<PayloadEventFocus>(), 56);
         assert_eq!(core::mem::size_of::<PayloadEventResize>(), 56);
-        assert_eq!(core::mem::size_of::<PayloadKdp>(), 56);
+        assert_eq!(core::mem::size_of::<PayloadRdp>(), 56);
     }
 
     #[test]
     fn test_kwmmsg_zero() {
-        let m = KwmMsg::ZERO;
+        let m = RwmMsg::ZERO;
         assert_eq!(m.msg_type, 0);
         assert_eq!(m.sender_pid, 0);
         unsafe { assert_eq!(m.payload.raw.data, [0u8; 56]); }

@@ -6,7 +6,7 @@
 //! trait library so that the rest of the workspace can depend on it without
 //! pulling in platform specifics.
 //!
-//! Compiled as `no_std + alloc` so it can run on the Kingdom bare-metal userland.
+//! Compiled as `no_std + alloc` so it can run on the RogueOS bare-metal userland.
 
 #![no_std]
 extern crate alloc;

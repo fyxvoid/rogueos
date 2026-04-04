@@ -16,7 +16,7 @@ members = [
   "userland/rwm-core",
   "userland/rwm-desktop",
   "userland/kapp",
-  # Kingdom-native graphical applications
+  # RogueOS-native graphical applications
   "apps/rogue-clip",
   "apps/rogue-lock",
   "apps/rogue-shot",

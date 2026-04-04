@@ -1,14 +1,14 @@
 //! rogue_ds — Rogue Display Server
 //!
 //! The display server is the **single compositor process** that owns the
-//! physical framebuffer on Kingdom OS.  It replaces the old single-process
+//! physical framebuffer on RogueOS.  It replaces the old single-process
 //! WM that called `sys_fb_*` directly.
 //!
 //! ## Responsibilities
 //!
 //! 1. **Window management** — 9-tag workspace, 7 layout modes (Tile, Monocle,
 //!    Grid, BStack, Spiral, Dwindle, CenteredMaster), focus tracking, border/bar
-//!    rendering.  Algorithm source: kingdom/userland/rwm-core (ported from
+//!    rendering.  Algorithm source: rogueos/userland/rwm-core (ported from
 //!    rogue-desktop/dwm-rs).
 //!
 //! 2. **Surface compositing** — Each client app is assigned a kernel surface
@@ -16,7 +16,7 @@
 //!    each window surface in z-order via `SYS_SURFACE_COMMIT`, then draws
 //!    decorations (borders, bar) via `sys_fb_fill_rect`.
 //!
-//! 3. **Client IPC** — Apps connect by sending `KwmMsg::Register`.  The DS
+//! 3. **Client IPC** — Apps connect by sending `RwmMsg::Register`.  The DS
 //!    assigns a surface ID and geometry, then forwards input events to the
 //!    focused window.
 //!
@@ -27,8 +27,8 @@
 //! ## Architecture diagram
 //!
 //! ```
-//! Apps ──KwmMsg::Register──► rogue_ds ──KwmMsg::Geometry──► Apps
-//! Apps ──KwmMsg::SurfaceCommit──────────►│
+//! Apps ──RwmMsg::Register──► rogue_ds ──RwmMsg::Geometry──► Apps
+//! Apps ──RwmMsg::SurfaceCommit──────────►│
 //!                                         │ SYS_SURFACE_ATTACH + COMMIT
 //!                                         ▼
 //!                               Kernel Display Server
@@ -40,21 +40,21 @@
 //! ## Why NOT a Wayland compositor
 //!
 //! Wayland requires Unix domain sockets, shared memory via `memfd`, and a
-//! running Linux kernel.  Kingdom OS uses kernel IPC (KwmMsg over
+//! running Linux kernel.  RogueOS uses kernel IPC (RwmMsg over
 //! `SYS_IPC_SEND`/`SYS_IPC_RECV`) which is simpler, faster (no socket
 //! copies), and avoids the 100 kLoC Wayland protocol machinery.
 //!
 //! ## Why NOT X11
 //!
 //! Same reasons plus: X11 requires an X server process, separate window IDs,
-//! GraphicsContexts, pixmap allocations, and EWMH/ICCCM handshake.  Kingdom's
+//! GraphicsContexts, pixmap allocations, and EWMH/ICCCM handshake.  RogueOS's
 //! surface protocol achieves the same result in ~400 lines.
 
 #![no_std]
 #![no_main]
 
 use libs::{
-    keycodes::*, IPC_NONBLOCK, KwmMsg, KwmPayload, KwmType,
+    keycodes::*, IPC_NONBLOCK, RwmMsg, RwmPayload, RwmType,
     PayloadEventFocus, PayloadEventKey, PayloadGeometry,
     PayloadRaw, PayloadSurfaceAssign,
     SYSERR_AGAIN,
@@ -457,10 +457,10 @@ impl Ds {
         let c = &self.clients[idx];
         if !c.alive { return; }
         let msg = make_msg(
-            KwmType::Geometry as u8,
+            RwmType::Geometry as u8,
             self.my_pid,
             self.seq,
-            KwmPayload {
+            RwmPayload {
                 geometry: PayloadGeometry {
                     x: c.x, y: c.y, w: c.w, h: c.h,
                     _pad: [0; 40],
@@ -476,10 +476,10 @@ impl Ds {
         let c = &self.clients[idx];
         if !c.alive { return; }
         let msg = make_msg(
-            KwmType::SurfaceAssign as u8,
+            RwmType::SurfaceAssign as u8,
             self.my_pid,
             self.seq,
-            KwmPayload {
+            RwmPayload {
                 surface_assign: PayloadSurfaceAssign {
                     surface_id: c.surface_id,
                     _pad: [0; 52],
@@ -592,10 +592,10 @@ impl Ds {
             let old = self.focused;
             if self.clients[old].alive {
                 let msg = make_msg(
-                    KwmType::EventFocus as u8,
+                    RwmType::EventFocus as u8,
                     self.my_pid,
                     self.seq,
-                    KwmPayload { event_focus: PayloadEventFocus { focused: 0, _pad: [0;55] } },
+                    RwmPayload { event_focus: PayloadEventFocus { focused: 0, _pad: [0;55] } },
                 );
                 self.seq = self.seq.wrapping_add(1);
                 sys_ipc_send(self.clients[old].pid, &msg, 0);
@@ -605,10 +605,10 @@ impl Ds {
         // Send Focus to new target.
         if self.clients[idx].alive {
             let msg = make_msg(
-                KwmType::EventFocus as u8,
+                RwmType::EventFocus as u8,
                 self.my_pid,
                 self.seq,
-                KwmPayload { event_focus: PayloadEventFocus { focused: 1, _pad: [0;55] } },
+                RwmPayload { event_focus: PayloadEventFocus { focused: 1, _pad: [0;55] } },
             );
             self.seq = self.seq.wrapping_add(1);
             sys_ipc_send(self.clients[idx].pid, &msg, 0);
@@ -620,10 +620,10 @@ impl Ds {
         if f >= MAX_CLIENTS || !self.clients[f].alive { return; }
         let pid = self.clients[f].pid;
         let msg = make_msg(
-            KwmType::EventKey as u8,
+            RwmType::EventKey as u8,
             self.my_pid,
             self.seq,
-            KwmPayload {
+            RwmPayload {
                 event_key: PayloadEventKey {
                     keycode,
                     pressed: pressed as u8,
@@ -697,13 +697,13 @@ impl Ds {
 // ── IPC message handling ─────────────────────────────────────────────────────
 
 fn handle_ipc(ds: &mut Ds) -> bool {
-    let mut msg = KwmMsg::ZERO;
+    let mut msg = RwmMsg::ZERO;
     let r = sys_ipc_recv(&mut msg, IPC_NONBLOCK);
     if r == SYSERR_AGAIN as isize || r < 0 {
         return false;
     }
     let t = msg.msg_type;
-    if t == KwmType::Register as u8 {
+    if t == RwmType::Register as u8 {
         // New client wants to connect.
         let pid = msg.sender_pid;
         let title = unsafe { &msg.payload.register.title };
@@ -723,13 +723,13 @@ fn handle_ipc(ds: &mut Ds) -> bool {
         }
         return true;
     }
-    if t == KwmType::Unregister as u8 {
+    if t == RwmType::Unregister as u8 {
         ds.remove_client(msg.sender_pid);
         ds.arrange();
         ds.composite_frame();
         return true;
     }
-    if t == KwmType::SurfaceCommit as u8 {
+    if t == RwmType::SurfaceCommit as u8 {
         let sc = unsafe { msg.payload.surface_commit };
         // Mark client dirty; the surface buffer is already attached by the app.
         for c in ds.clients.iter_mut() {
@@ -743,7 +743,7 @@ fn handle_ipc(ds: &mut Ds) -> bool {
         ds.composite_frame();
         return true;
     }
-    if t == KwmType::SetTitle as u8 {
+    if t == RwmType::SetTitle as u8 {
         let title = unsafe { &msg.payload.set_title.title };
         let n = title.iter().position(|&b| b == 0).unwrap_or(title.len()).min(20);
         for c in ds.clients.iter_mut() {
@@ -758,10 +758,10 @@ fn handle_ipc(ds: &mut Ds) -> bool {
     false
 }
 
-// ── Helper: build a KwmMsg ────────────────────────────────────────────────────
+// ── Helper: build a RwmMsg ────────────────────────────────────────────────────
 
-fn make_msg(msg_type: u8, sender_pid: u32, seq: u16, payload: KwmPayload) -> KwmMsg {
-    KwmMsg { msg_type, flags: 0, seq, sender_pid, payload }
+fn make_msg(msg_type: u8, sender_pid: u32, seq: u16, payload: RwmPayload) -> RwmMsg {
+    RwmMsg { msg_type, flags: 0, seq, sender_pid, payload }
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────

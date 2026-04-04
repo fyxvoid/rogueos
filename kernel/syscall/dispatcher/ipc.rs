@@ -2,9 +2,9 @@
 
 use crate::process;
 use crate::syscall::user_ptr::{self, SysErr};
-use libs::{IPC_NONBLOCK, KwmMsg, SYSERR_AGAIN};
+use libs::{IPC_NONBLOCK, RwmMsg, SYSERR_AGAIN};
 
-/// SYS_IPC_SEND — send a KwmMsg to target_pid.
+/// SYS_IPC_SEND — send a RwmMsg to target_pid.
 ///
 /// Copies the message from user space, stamps sender_pid with the calling
 /// process's actual PID (ignoring whatever the app wrote there), then enqueues
@@ -15,7 +15,7 @@ use libs::{IPC_NONBLOCK, KwmMsg, SYSERR_AGAIN};
 /// Returns `Err(NOMEM)` if the target's queue is full.
 pub fn sys_ipc_send(
     target_pid: u32,
-    msg_ptr: *const KwmMsg,
+    msg_ptr: *const RwmMsg,
     _flags: u32,
 ) -> Result<u64, SysErr> {
     // Validate the user pointer.
@@ -23,12 +23,12 @@ pub fn sys_ipc_send(
     user_ptr::validate_user_range(
         cr3,
         msg_ptr as u64,
-        core::mem::size_of::<KwmMsg>(),
+        core::mem::size_of::<RwmMsg>(),
         false,
     )?;
 
     // Copy the message out of user space.
-    let mut msg: KwmMsg = unsafe { core::ptr::read(msg_ptr) };
+    let mut msg: RwmMsg = unsafe { core::ptr::read(msg_ptr) };
 
     // Stamp sender_pid — the kernel is authoritative here.
     msg.sender_pid = process::current_pid().unwrap_or(0);
@@ -44,19 +44,19 @@ pub fn sys_ipc_send(
     Ok(0)
 }
 
-/// SYS_IPC_RECV — dequeue the next KwmMsg for the calling process.
+/// SYS_IPC_RECV — dequeue the next RwmMsg for the calling process.
 ///
 /// If the queue is empty and `IPC_NONBLOCK` is set in flags, returns
 /// `SYSERR_AGAIN`.  (Blocking is not yet implemented; behaves like non-blocking.)
 ///
 /// Returns `Ok(0)` and writes to `*out_ptr` on success.
-pub fn sys_ipc_recv(out_ptr: *mut KwmMsg, flags: u32) -> Result<u64, SysErr> {
+pub fn sys_ipc_recv(out_ptr: *mut RwmMsg, flags: u32) -> Result<u64, SysErr> {
     // Validate the output pointer.
     let cr3 = user_ptr::current_cr3()?;
     user_ptr::validate_user_range(
         cr3,
         out_ptr as u64,
-        core::mem::size_of::<KwmMsg>(),
+        core::mem::size_of::<RwmMsg>(),
         true,
     )?;
 

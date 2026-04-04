@@ -1,7 +1,7 @@
-//! RogueWM — Kingdom's window manager powered by rwm-core.
+//! RogueWM — RogueOS's window manager powered by rwm-core.
 //!
 //! Runs bare-metal (no_std + alloc via userland bump allocator).
-//! Uses rwm-core for window/tag/layout state and Kingdom framebuffer syscalls for rendering.
+//! Uses rwm-core for window/tag/layout state and RogueOS framebuffer syscalls for rendering.
 //!
 //! Boot sequence:
 //!   kernel_main → init → sys_spawn(1) → rwm (_start)

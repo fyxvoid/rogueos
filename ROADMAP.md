@@ -1,4 +1,4 @@
-# RogueII / Kingdom OS — Full Development Roadmap
+# RogueII / RogueOS — Full Development Roadmap
 
 > A clean-room, Rust-only operating system targeting top-tier performance,  
 > deterministic behaviour, and strong security — with no Linux ABI baggage.
@@ -9,7 +9,7 @@
 
 **kernel → cogman → compositor → apps**
 
-Kingdom is built on three axioms:
+RogueOS is built on three axioms:
 1. **Rust everywhere** — kernel, bootloader, drivers, userland. Zero C. Zero glibc.
 2. **Spawn, never fork** — clean process semantics, no COW shadow state.
 3. **Capability first** — no ambient authority; every action requires an explicit capability token.
@@ -31,7 +31,7 @@ Kingdom is built on three axioms:
 | EEVDF scheduler (single-core) | ✅ |
 | Spawn-only process model | ✅ |
 | ELF loader | ✅ |
-| IPC (64-byte KwmMsg, kernel queue) | ✅ |
+| IPC (64-byte RwmMsg, kernel queue) | ✅ |
 | Framebuffer / GOP | ✅ |
 | NVMe driver (basic) | ✅ |
 | Simple FS (VFS + flat file table) | ✅ |
@@ -66,7 +66,7 @@ Kingdom is built on three axioms:
 ### 1.4 Futex
 - `SYS_FUTEX_WAIT(addr, expected) → 0 / SYSERR_AGAIN`
 - `SYS_FUTEX_WAKE(addr, count) → woken_count`
-- Powers `Mutex`, `Condvar`, `RwLock` in the kingdom std library (Phase 9).
+- Powers `Mutex`, `Condvar`, `RwLock` in the rogueos std library (Phase 9).
 
 ### 1.5 Yield
 - `SYS_YIELD` — voluntarily give up remaining time slice.
@@ -83,7 +83,7 @@ Kingdom is built on three axioms:
 - Queue depth ≥ 32; multiple submission queues (one per CPU in SMP).
 - Power management: NVM Express power states 1–4.
 
-### 2.2 KingdomFS (KFS)
+### 2.2 RogueFS (KFS)
 - Log-structured filesystem with a circular journal (inspired by F2FS concept, original impl).
 - Block size: 4 KiB; extents; inline small files (< 128 B in inode).
 - Checksums on every metadata block (BLAKE3-32).
@@ -244,27 +244,27 @@ Kingdom is built on three axioms:
 
 ## Phase 8 — Developer Toolchain
 
-**Goal:** build Kingdom apps natively on Kingdom.
+**Goal:** build RogueOS apps natively on RogueOS.
 
-### 8.1 kingdom-std
-- Implement Rust `std` for the `x86_64-unknown-kingdom` target.
-- Backed by Kingdom syscalls: `alloc` via `SYS_MMAP`, `thread` via `SYS_THREAD_SPAWN`, etc.
+### 8.1 rogueos-std
+- Implement Rust `std` for the `x86_64-unknown-rogueos` target.
+- Backed by RogueOS syscalls: `alloc` via `SYS_MMAP`, `thread` via `SYS_THREAD_SPAWN`, etc.
 - Distribute as a pre-compiled sysroot embedded in the OS image.
 
-### 8.2 Custom Rust target (`x86_64-unknown-kingdom`)
-- Target spec JSON: `os = "kingdom"`, `env = ""`, `abi = "sysv64"`.
+### 8.2 Custom Rust target (`x86_64-unknown-rogueos`)
+- Target spec JSON: `os = "rogueos"`, `env = ""`, `abi = "sysv64"`.
 - Merged into rust-lang/rust upstream (long-term goal).
 
 ### 8.3 kargo — package manager
-- Port of cogman-planner concept to kingdom-native execution.
+- Port of cogman-planner concept to rogueos-native execution.
 - `.kpkg` registry at a known URL (network via Phase 3).
 - Build recipes in TOML; deterministic builds via hash-locked deps.
 - `kargo build`, `kargo install`, `kargo run`.
 
 ### 8.4 Cogman AI assistant (on-device)
-- Port `cogman-advisor` from rogue-linux to kingdom userland.
+- Port `cogman-advisor` from rogue-linux to rogueos userland.
 - Model: 1-3B parameter, 4-bit quantized — fits in 2 GB RAM.
-- Inference via kingdom-native matrix kernel (AVX2 GEMM, no_std).
+- Inference via rogueos-native matrix kernel (AVX2 GEMM, no_std).
 - `cogman ask "why is session crashing?"` → advisor reads IPC logs, suggests fix.
 
 ---
@@ -324,7 +324,7 @@ Kingdom is built on three axioms:
 | **M3** Security | 4 + 5 | Capability tokens, SMP boot |
 | **M4** Desktop | 6 | virtio-gpu, composited WM, font rendering |
 | **M5** Perf | 7 | Lock-free IPC, < 100 ms boot, all PMU targets met |
-| **M6** Toolchain | 8 | kingdom-std, kargo, on-device AI assistant |
+| **M6** Toolchain | 8 | rogueos-std, kargo, on-device AI assistant |
 | **M7** Verified | 9 | Kani/Prusti proofs, LibAFL fuzzer clean |
 | **M8** Production | 10 | Bare-metal, ARM64, public release |
 

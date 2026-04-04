@@ -1,4 +1,4 @@
-### Kingdom OS — Build & Lint Status (dev host)
+### RogueOS — Build & Lint Status (dev host)
 
 #### Workspace `cargo build`
 
