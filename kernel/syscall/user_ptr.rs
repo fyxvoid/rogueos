@@ -21,6 +21,7 @@ impl SysErr {
     pub const MFILE: SysErr = SysErr(libs::SYSERR_MFILE);
     pub const NOMEM: SysErr = SysErr(libs::SYSERR_NOMEM);
     pub const AGAIN: SysErr = SysErr(libs::SYSERR_AGAIN);
+    pub const PERM:  SysErr = SysErr(libs::SYSERR_PERM);
 }
 
 /// Convert Result to u64 for rax: Ok(v) => v, Err(e) => e.0 as u64 (sign-extended for isize).

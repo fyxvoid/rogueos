@@ -33,17 +33,24 @@
 #![no_std]
 #![no_main]
 
-use libs::keycodes::*;
+use libs::{keycodes::*, IPC_NONBLOCK, KwmMsg};
 use libs::KeyEvent;
 use userland::{
-    sys_exit, sys_fb_clear, sys_fb_fill_rect, sys_fb_flush, sys_poll_input, sys_spawn, sys_write,
-    // Surface protocol — used to register each managed window with the kernel
-    // display server so ownership and z-order are tracked.  Full pixel-buffer
-    // compositing (sys_surface_attach) requires per-window heap allocation and
-    // will be added when the userland heap supports large buffers.
-    sys_surface_create, sys_surface_destroy,
-    sys_screen_size,
+    sys_claim_compositor, sys_exit, sys_fb_clear, sys_fb_fill_rect, sys_fb_flush,
+    sys_ipc_recv, sys_ipc_send,
+    sys_poll_input, sys_spawn, sys_write,
+    sys_surface_commit, sys_surface_destroy,
 };
+
+// KDP message type bytes (mirror libs::KwmType repr).
+const KDP_CONNECT:    u8 = 0x50;
+const KDP_GRANT:      u8 = 0x51;
+const KDP_COMMIT:     u8 = 0x52;
+const KDP_RESIZE:     u8 = 0x53;
+const KDP_KEY:        u8 = 0x54;
+const KDP_FOCUS:      u8 = 0x55;
+const KDP_CLOSE:      u8 = 0x56;
+const KDP_DISCONNECT: u8 = 0x57;
 
 // ── Theme: Tokyo Night ────────────────────────────────────────────────────────
 
@@ -160,6 +167,8 @@ struct Client {
     prog_id: u8,
     /// Spawned process ID (from sys_spawn), 0 if no process.
     pid: u32,
+    /// KDP surface ID (created by client via SYS_SURFACE_CREATE). 0 = no surface.
+    surface_id: u32,
     /// Short display title.
     title: [u8; 20],
     title_len: u8,
@@ -176,6 +185,7 @@ impl Client {
             saved_x: 0, saved_y: 0, saved_w: 0, saved_h: 0,
             prog_id: 0,
             pid: 0,
+            surface_id: 0,
             title: [0; 20],
             title_len: 0,
         }
@@ -210,6 +220,8 @@ struct Wm {
     mod_dn:    bool,
     shift_dn:  bool,
     ctrl_dn:   bool,
+    /// Needs a redraw on next composite pass.
+    dirty:     bool,
 }
 
 impl Wm {
@@ -234,6 +246,7 @@ impl Wm {
             mod_dn:       false,
             shift_dn:     false,
             ctrl_dn:      false,
+            dirty:        true,
         }
     }
 
@@ -801,6 +814,117 @@ fn draw_bar(wm: &Wm) {
     let _ = sys_fb_fill_rect(0, BAR_H - 1, wm.sw, 1, 0xFF_29_2E_42);
 }
 
+// ── KDP compositor helpers ────────────────────────────────────────────────────
+
+/// Send KdpGrant to a client: tells it its geometry.
+fn send_kdp_grant(client_pid: u32, surface_id: u32, x: i32, y: i32, w: u32, h: u32, title: &[u8]) {
+    let mut msg = KwmMsg::ZERO;
+    msg.msg_type = KDP_GRANT;
+    let kdp = unsafe { &mut msg.payload.kdp };
+    kdp.surface_id = surface_id;
+    kdp.x = x;
+    kdp.y = y;
+    kdp.width = w;
+    kdp.height = h;
+    let n = title.len().min(kdp.title.len() - 1);
+    kdp.title[..n].copy_from_slice(&title[..n]);
+    let _ = sys_ipc_send(client_pid, &msg, 0);
+}
+
+/// Send KdpResize to a client: compositor has relaid out, client should re-render.
+fn send_kdp_resize(client_pid: u32, surface_id: u32, w: u32, h: u32) {
+    let mut msg = KwmMsg::ZERO;
+    msg.msg_type = KDP_RESIZE;
+    let kdp = unsafe { &mut msg.payload.kdp };
+    kdp.surface_id = surface_id;
+    kdp.width = w;
+    kdp.height = h;
+    let _ = sys_ipc_send(client_pid, &msg, 0);
+}
+
+/// Forward a key event to a focused KDP client.
+fn send_kdp_key(client_pid: u32, keycode: u8, pressed: bool) {
+    let mut msg = KwmMsg::ZERO;
+    msg.msg_type = KDP_KEY;
+    let kdp = unsafe { &mut msg.payload.kdp };
+    kdp.key_code = keycode as u32;
+    kdp.key_state = if pressed { 1 } else { 0 };
+    let _ = sys_ipc_send(client_pid, &msg, 0);
+}
+
+/// Send KdpFocus to a client: focused=true or false.
+fn send_kdp_focus(client_pid: u32, focused: bool) {
+    let mut msg = KwmMsg::ZERO;
+    msg.msg_type = KDP_FOCUS;
+    let kdp = unsafe { &mut msg.payload.kdp };
+    kdp.flags = if focused { 1 } else { 0 };
+    let _ = sys_ipc_send(client_pid, &msg, 0);
+}
+
+/// Send KdpClose to a client: politely ask it to exit.
+fn send_kdp_close(client_pid: u32, surface_id: u32) {
+    let mut msg = KwmMsg::ZERO;
+    msg.msg_type = KDP_CLOSE;
+    let kdp = unsafe { &mut msg.payload.kdp };
+    kdp.surface_id = surface_id;
+    let _ = sys_ipc_send(client_pid, &msg, 0);
+}
+
+/// Handle one incoming IPC message addressed to the compositor.
+/// Returns true if the scene needs a redraw.
+fn handle_ipc_msg(wm: &mut Wm, msg: &KwmMsg) -> bool {
+    let sender = msg.sender_pid;
+    let kdp = unsafe { msg.payload.kdp };
+
+    match msg.msg_type {
+        KDP_CONNECT => {
+            // Client wants a window; it has already created a surface.
+            let surface_id = kdp.surface_id;
+            // Extract title from payload.
+            let tlen = kdp.title.iter().position(|&b| b == 0).unwrap_or(kdp.title.len());
+            let title = &kdp.title[..tlen];
+            let idx = wm.add_client(0xFF, title);
+            let c = &mut wm.clients[idx];
+            c.pid = sender;
+            c.surface_id = surface_id;
+            wm.focused = idx;
+            // Recompute layout so we have the correct geometry.
+            wm.arrange();
+            let c = &wm.clients[idx];
+            send_kdp_grant(sender, surface_id, c.x, c.y, c.w, c.h, title);
+            true
+        }
+        KDP_COMMIT => {
+            // Client updated its surface buffer; blit it to the framebuffer.
+            let surface_id = kdp.surface_id;
+            // Find the client.
+            for i in 0..MAX_WIN {
+                let c = &wm.clients[i];
+                if c.alive && c.pid == sender && c.surface_id == surface_id {
+                    // Blit at the client's current tile position.
+                    let _ = sys_surface_commit(surface_id, c.x as u32, c.y as u32);
+                    break;
+                }
+            }
+            false // partial blit — full flush done in draw_scene
+        }
+        KDP_DISCONNECT => {
+            // Client is closing; find and remove it.
+            let surface_id = kdp.surface_id;
+            for i in 0..MAX_WIN {
+                let c = &wm.clients[i];
+                if c.alive && c.pid == sender && c.surface_id == surface_id {
+                    let _ = sys_surface_destroy(surface_id);
+                    wm.remove_client(i);
+                    break;
+                }
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
 // ── Scene rendering ───────────────────────────────────────────────────────────
 
 fn draw_scene(wm: &mut Wm) {
@@ -845,8 +969,15 @@ fn draw_scene(wm: &mut Wm) {
                 );
             }
 
-            // Draw a mini visual to distinguish windows (diagonal stripe pattern).
-            if w > BORDER * 2 + 8 && h > BORDER * 2 + 8 {
+            // Blit KDP surface if client has rendered content; otherwise draw placeholder.
+            if c.surface_id != 0 && w > BORDER * 2 && h > BORDER * 2 {
+                // surface_commit blits the client's pixel buffer at the content area.
+                let _ = sys_surface_commit(
+                    c.surface_id,
+                    (x as u32) + BORDER,
+                    (y as u32) + BORDER,
+                );
+            } else if w > BORDER * 2 + 8 && h > BORDER * 2 + 8 {
                 draw_window_content(wm, i, is_focused);
             }
 
@@ -893,7 +1024,20 @@ fn draw_window_content(wm: &Wm, idx: usize, focused: bool) {
 
 // ── Keyboard handling ─────────────────────────────────────────────────────────
 
-fn handle_key(wm: &mut Wm, key: u8) -> bool {
+fn handle_key(wm: &mut Wm, key: u8, pressed: bool) -> bool {
+    // Only act on WM bindings for key press events.
+    if !pressed {
+        // Forward release events to focused KDP client and return.
+        let idx = wm.focused;
+        if idx < MAX_WIN && wm.clients[idx].alive {
+            let c = &wm.clients[idx];
+            if c.pid != 0 && c.surface_id != 0 {
+                send_kdp_key(c.pid, key, false);
+            }
+        }
+        return false;
+    }
+
     // Mod+<key> bindings.
     if wm.mod_dn && !wm.shift_dn {
         match key {
@@ -1013,9 +1157,18 @@ fn handle_key(wm: &mut Wm, key: u8) -> bool {
                 wm.layout = wm.layout.prev();
                 return true;
             }
-            // Close focused window.
+            // Close focused window: send KdpClose IPC if it's a KDP client; remove otherwise.
             KEY_C => {
-                wm.remove_client(wm.focused);
+                let idx = wm.focused;
+                if idx < MAX_WIN && wm.clients[idx].alive {
+                    let c = &wm.clients[idx];
+                    if c.pid != 0 && c.surface_id != 0 {
+                        // Politely ask the KDP client to close; it will send KdpDisconnect back.
+                        send_kdp_close(c.pid, c.surface_id);
+                    } else {
+                        wm.remove_client(idx);
+                    }
+                }
                 return true;
             }
             // Quit / reboot.
@@ -1028,6 +1181,14 @@ fn handle_key(wm: &mut Wm, key: u8) -> bool {
         }
     }
 
+    // No WM binding matched — forward the key press to the focused KDP client (if any).
+    let idx = wm.focused;
+    if idx < MAX_WIN && wm.clients[idx].alive {
+        let c = &wm.clients[idx];
+        if c.pid != 0 && c.surface_id != 0 {
+            send_kdp_key(c.pid, key, true);
+        }
+    }
     false
 }
 
@@ -1035,11 +1196,20 @@ fn handle_key(wm: &mut Wm, key: u8) -> bool {
 
 #[no_mangle]
 fn _start() -> ! {
-    log(b"[WM] kingdom-wm starting\r\n");
+    log(b"[WM] kingdom-wm starting (KDP compositor)\r\n");
+
+    // Claim compositor authority — this PID is now the only one that may
+    // call sys_surface_commit. Clients call sys_get_compositor_pid() to find us.
+    let claim_r = sys_claim_compositor();
+    if claim_r < 0 {
+        log(b"[WM] WARNING: could not claim compositor (another WM running?)\r\n");
+    } else {
+        log(b"[WM] compositor authority claimed\r\n");
+    }
 
     let mut wm = Wm::new();
 
-    // Pre-create a welcome window so the screen isn't empty at start.
+    // Pre-create a welcome placeholder (no KDP surface; drawn with fb ops).
     let idx = wm.add_client(0xFF, b"welcome");
     wm.clients[idx].tags = 0x01;
     wm.focused = idx;
@@ -1048,34 +1218,46 @@ fn _start() -> ! {
     log(b"[WM] initial draw done\r\n");
 
     let mut ev = KeyEvent { keycode: 0, pressed: false };
+    let mut ipc_msg = KwmMsg::ZERO;
     let mut idle_ticks: u32 = 0;
 
     loop {
-        let n = sys_poll_input(&mut ev);
         idle_ticks = idle_ticks.wrapping_add(1);
 
-        if n <= 0 {
-            // Periodic heartbeat to serial every ~100k ticks.
-            if idle_ticks % 100_000 == 0 {
-                log(b"[WM] idle\r\n");
+        // ── 1. Drain IPC queue (non-blocking) ────────────────────────────
+        let mut ipc_changed = false;
+        while sys_ipc_recv(&mut ipc_msg, IPC_NONBLOCK) == 0 {
+            if handle_ipc_msg(&mut wm, &ipc_msg) {
+                ipc_changed = true;
             }
-            continue;
         }
 
-        // Track modifier state on every key event (press & release).
-        match ev.keycode {
-            KEY_MOD   => { wm.mod_dn   = ev.pressed; continue; }
-            KEY_SHIFT => { wm.shift_dn = ev.pressed; continue; }
-            KEY_CTRL  => { wm.ctrl_dn  = ev.pressed; continue; }
-            _ => {}
+        // ── 2. Poll keyboard (non-blocking) ──────────────────────────────
+        let mut key_changed = false;
+        let n = sys_poll_input(&mut ev);
+        if n > 0 {
+            // Track modifier state (both press and release).
+            match ev.keycode {
+                KEY_MOD   => { wm.mod_dn   = ev.pressed; }
+                KEY_SHIFT => { wm.shift_dn = ev.pressed; }
+                KEY_CTRL  => { wm.ctrl_dn  = ev.pressed; }
+                _ => {
+                    if handle_key(&mut wm, ev.keycode, ev.pressed) {
+                        key_changed = true;
+                    }
+                }
+            }
         }
 
-        // Only act on key press events.
-        if !ev.pressed { continue; }
-
-        let changed = handle_key(&mut wm, ev.keycode);
-        if changed {
+        // ── 3. Redraw if anything changed ────────────────────────────────
+        if ipc_changed || key_changed || wm.dirty {
             draw_scene(&mut wm);
+            wm.dirty = false;
+        }
+
+        // Periodic serial heartbeat.
+        if idle_ticks % 200_000 == 0 {
+            log(b"[WM] idle\r\n");
         }
     }
 }

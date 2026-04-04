@@ -18,6 +18,7 @@ use libs::{
     SYS_FSYNC, SYS_GETPID, SYS_GET_PROC_INFO, SYS_IPC_RECV, SYS_IPC_SEND,
     SYS_LIST_ROOT, SYS_LSEEK, SYS_OPEN, SYS_POLL_INPUT, SYS_POLL_MOUSE,
     SYS_READ, SYS_REBOOT, SYS_SCREEN_SIZE, SYS_SPAWN,
+    SYS_CLAIM_COMPOSITOR, SYS_COMPOSITE_ALL, SYS_GET_COMPOSITOR_PID,
     SYS_SURFACE_ATTACH, SYS_SURFACE_COMMIT, SYS_SURFACE_CREATE, SYS_SURFACE_DESTROY,
     SYS_UNLINK, SYS_WAITPID, SYS_WRITE,
     // Debug / perf / scheduler
@@ -106,6 +107,13 @@ pub extern "C" fn syscall_dispatch(
         SYS_FB_BLIT => user_ptr::result_to_rax(
             gfx::sys_fb_blit(a1 as u32, a2 as u32, a3 as u32, a4 as u32, a5 as u32, _a6 as *const u8),
             |v| v, |e| e.0),
+        // ── KDP compositor control ────────────────────────────────────────
+        SYS_CLAIM_COMPOSITOR => user_ptr::result_to_rax(
+            gfx::sys_claim_compositor(), |v| v, |e| e.0),
+        SYS_COMPOSITE_ALL => user_ptr::result_to_rax(
+            gfx::sys_composite_all(), |v| v, |e| e.0),
+        SYS_GET_COMPOSITOR_PID => user_ptr::result_to_rax(
+            gfx::sys_get_compositor_pid(), |v| v, |e| e.0),
 
         // ── IPC protocol ─────────────────────────────────────────────────
         SYS_IPC_SEND => user_ptr::result_to_rax(

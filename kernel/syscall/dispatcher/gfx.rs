@@ -54,9 +54,39 @@ pub(super) fn sys_fb_flush() -> Result<u64, SysErr> {
 
 // ── Surface protocol syscalls ─────────────────────────────────────────────
 
-/// Create a new display surface. Returns surface_id (u32) cast to u64, or error.
+/// Claim compositor authority. Returns 0 on success, PERM if already claimed.
+pub(super) fn sys_claim_compositor() -> Result<u64, SysErr> {
+    let pid = crate::process::current_pid().unwrap_or(0);
+    if crate::display::display_server::claim_compositor(pid) {
+        Ok(0)
+    } else {
+        Err(SysErr::PERM)
+    }
+}
+
+/// Get the registered compositor PID. Returns pid on success, NOENT if none.
+pub(super) fn sys_get_compositor_pid() -> Result<u64, SysErr> {
+    match crate::display::display_server::get_compositor_pid() {
+        Some(pid) => Ok(pid as u64),
+        None => Err(SysErr::NOENT),
+    }
+}
+
+/// Composite all surfaces in z-order and flush. Only compositor may call.
+pub(super) fn sys_composite_all() -> Result<u64, SysErr> {
+    let pid = crate::process::current_pid().unwrap_or(0);
+    match crate::display::display_server::get_compositor_pid() {
+        Some(comp_pid) if comp_pid != pid => return Err(SysErr::PERM),
+        _ => {}
+    }
+    crate::display::display_server::composite_all();
+    Ok(0)
+}
+
+/// Create a new display surface owned by the calling process. Returns surface_id or error.
 pub(super) fn sys_surface_create() -> Result<u64, SysErr> {
-    match crate::display::display_server::surface_create() {
+    let owner = crate::process::current_pid().unwrap_or(0);
+    match crate::display::display_server::surface_create(owner) {
         Some(id) => Ok(id as u64),
         None => Err(SysErr::NOMEM),
     }
@@ -68,7 +98,7 @@ pub(super) fn sys_surface_destroy(id: u32) -> Result<u64, SysErr> {
     Ok(0)
 }
 
-/// Attach a 32bpp pixel buffer to a surface.
+/// Attach a 32bpp pixel buffer to a surface. Only the surface owner may attach.
 /// Args: surface_id, ptr (user), width, height, stride_bytes.
 pub(super) fn sys_surface_attach(
     id: u32,
@@ -82,19 +112,21 @@ pub(super) fn sys_surface_attach(
     }
     let buf_bytes = (stride as usize).saturating_mul(height as usize);
     user_ptr::validate_user_ptr_large(ptr as u64, buf_bytes)?;
-    if crate::display::display_server::surface_attach(id, ptr, width, height, stride) {
+    let caller = crate::process::current_pid().unwrap_or(0);
+    if crate::display::display_server::surface_attach(id, ptr, width, height, stride, caller) {
         Ok(0)
     } else {
-        Err(SysErr::INVAL)
+        Err(SysErr::PERM)
     }
 }
 
-/// Commit (blit) surface buffer to framebuffer at (dst_x, dst_y).
+/// Commit (blit) surface buffer to framebuffer at (dst_x, dst_y). Only compositor may commit.
 pub(super) fn sys_surface_commit(id: u32, dst_x: u32, dst_y: u32) -> Result<u64, SysErr> {
-    if crate::display::display_server::surface_commit(id, dst_x, dst_y) {
+    let caller = crate::process::current_pid().unwrap_or(0);
+    if crate::display::display_server::surface_commit(id, dst_x, dst_y, caller) {
         Ok(0)
     } else {
-        Err(SysErr::INVAL)
+        Err(SysErr::PERM)
     }
 }
 

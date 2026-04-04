@@ -40,6 +40,14 @@ pub const SYS_SURFACE_COMMIT: u64 = 0x213;
 pub const SYS_SCREEN_SIZE: u64 = 0x214;
 /// Blit raw 32bpp buffer to framebuffer. Args: dst_x, dst_y, w, h, stride, ptr. Returns 0 or negative.
 pub const SYS_FB_BLIT: u64 = 0x215;
+/// Claim compositor role (display authority). First caller wins; all surface_commit calls
+/// from non-compositor processes are rejected. Returns 0 on success, -EPERM if already claimed.
+pub const SYS_CLAIM_COMPOSITOR: u64 = 0x216;
+/// Composite all surfaces in z-order and flush to hardware. Only the registered compositor may call.
+/// Returns 0 on success, -EPERM if caller is not the compositor.
+pub const SYS_COMPOSITE_ALL: u64 = 0x217;
+/// Get the PID of the registered compositor. Returns pid on success, -ENOENT if none registered.
+pub const SYS_GET_COMPOSITOR_PID: u64 = 0x218;
 
 /// IPC syscalls (namespace 0x320).
 /// Send a KwmMsg to target process. Args: target_pid (u32), msg_ptr (*const KwmMsg), flags (u32).
@@ -131,6 +139,23 @@ pub enum KwmType {
     CogResp       = 0x44,
     /// Restart a running or stopped service.
     CogRestart    = 0x45,
+    // KDP (Kingdom Display Protocol) — secure compositor/window protocol (0x50–0x5F)
+    /// Client → compositor: request a window. Carries PayloadKdp (surface_id, flags, title).
+    KdpConnect    = 0x50,
+    /// Compositor → client: window assigned. Carries PayloadKdp (surface_id, x, y, width, height).
+    KdpGrant      = 0x51,
+    /// Client → compositor: pixel buffer updated. Carries PayloadKdp (surface_id).
+    KdpCommit     = 0x52,
+    /// Compositor → client: please resize. Carries PayloadKdp (surface_id, width, height).
+    KdpResize     = 0x53,
+    /// Compositor → client: key event. Carries PayloadKdp (key_code, key_state).
+    KdpKey        = 0x54,
+    /// Compositor → client: focus changed. Carries PayloadKdp (flags: 1=gained, 0=lost).
+    KdpFocus      = 0x55,
+    /// Compositor → client: please close gracefully. Carries PayloadKdp (surface_id).
+    KdpClose      = 0x56,
+    /// Client → compositor: window is closing. Carries PayloadKdp (surface_id).
+    KdpDisconnect = 0x57,
 }
 
 // ── KWM payload structs (each exactly 56 bytes) ───────────────────────────
@@ -227,6 +252,40 @@ pub struct PayloadRaw {
     pub data: [u8; 56],
 }
 
+/// KDP (Kingdom Display Protocol) window/compositor payload (56 bytes).
+///
+/// Direction depends on `KwmMsg::msg_type`:
+/// - KdpConnect    (client → compositor): surface_id, flags, title
+/// - KdpGrant      (compositor → client): surface_id, x, y, width, height
+/// - KdpCommit     (client → compositor): surface_id
+/// - KdpResize     (compositor → client): surface_id, width, height
+/// - KdpKey        (compositor → client): key_code, key_state
+/// - KdpFocus      (compositor → client): flags (1=focused, 0=blur)
+/// - KdpClose      (compositor → client): surface_id
+/// - KdpDisconnect (client → compositor): surface_id
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PayloadKdp {
+    /// Kernel surface ID (from SYS_SURFACE_CREATE, owned by the client).
+    pub surface_id: u32,
+    /// Window x (compositor → client in KdpGrant).
+    pub x:          i32,
+    /// Window y.
+    pub y:          i32,
+    /// Window width.
+    pub width:      u32,
+    /// Window height.
+    pub height:     u32,
+    /// Flags: KdpConnect hint bits; KdpFocus: 1=gained 0=lost; others: 0.
+    pub flags:      u32,
+    /// Keycode forwarded to client (KdpKey).
+    pub key_code:   u32,
+    /// Key state: 1=pressed, 0=released (KdpKey).
+    pub key_state:  u32,
+    /// NUL-terminated window title (client fills on KdpConnect; compositor echoes in KdpGrant).
+    pub title:      [u8; 24],
+}
+
 /// Cogman control / response payload (56 bytes).
 ///
 /// Sent from any process to cogman (pid 1) for Cog* requests.
@@ -272,6 +331,7 @@ pub union KwmPayload {
     pub event_focus:     PayloadEventFocus,
     pub event_resize:    PayloadEventResize,
     pub cog_ctrl:        PayloadCogCtrl,
+    pub kdp:             PayloadKdp,
     pub raw:             PayloadRaw,
 }
 
@@ -315,6 +375,7 @@ impl KwmMsg {
 const _: () = assert!(core::mem::size_of::<KwmMsg>() == 64);
 const _: () = assert!(core::mem::size_of::<KwmPayload>() == 56);
 const _: () = assert!(core::mem::size_of::<PayloadCogCtrl>() == 56);
+const _: () = assert!(core::mem::size_of::<PayloadKdp>() == 56);
 
 /// Process and debug syscalls (namespace 0x300).
 /// Debug: dump page tables for address range. Args: cr3 (a1), va_start (a2), va_end (a3).
@@ -341,6 +402,7 @@ pub const SYSERR_NOENT: i64 = -2; // No such file or entry
 pub const SYSERR_BADFD: i64 = -3; // Bad file descriptor or handle
 pub const SYSERR_MFILE: i64 = -4; // Too many open files
 pub const SYSERR_NOMEM: i64 = -5; // Out of resources / no free slots
+pub const SYSERR_PERM:  i64 = -6; // Operation not permitted (e.g. non-compositor calling surface_commit)
 
 /// Open flags for SYS_OPEN.
 pub const O_RDONLY: u32 = 0;
@@ -583,6 +645,7 @@ mod tests {
         assert_eq!(core::mem::size_of::<PayloadEventMouse>(), 56);
         assert_eq!(core::mem::size_of::<PayloadEventFocus>(), 56);
         assert_eq!(core::mem::size_of::<PayloadEventResize>(), 56);
+        assert_eq!(core::mem::size_of::<PayloadKdp>(), 56);
     }
 
     #[test]

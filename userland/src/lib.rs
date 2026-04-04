@@ -5,12 +5,15 @@
 #![cfg_attr(not(test), deny(warnings))]
 
 pub mod backend_kernel;
+/// KDP (Kingdom Display Protocol) client library for graphical applications.
+pub mod kdp;
 
 use libs::{
     KeyEvent, KwmMsg, ProcInfo,
-    SYS_CLOSE, SYS_EXIT,
+    SYS_CLAIM_COMPOSITOR, SYS_CLOSE, SYS_COMPOSITE_ALL, SYS_EXIT,
     SYS_FB_BLIT, SYS_FB_CLEAR, SYS_FB_FILL_RECT, SYS_FB_FLUSH,
-    SYS_FSYNC, SYS_GETPID, SYS_GET_PROC_INFO, SYS_IPC_RECV, SYS_IPC_SEND,
+    SYS_FSYNC, SYS_GETPID, SYS_GET_COMPOSITOR_PID, SYS_GET_PROC_INFO,
+    SYS_IPC_RECV, SYS_IPC_SEND,
     SYS_LIST_ROOT, SYS_LSEEK, SYS_OPEN, SYS_POLL_INPUT, SYS_READ, SYS_REBOOT,
     SYS_SCREEN_SIZE, SYS_SPAWN,
     SYS_SURFACE_ATTACH, SYS_SURFACE_COMMIT, SYS_SURFACE_CREATE, SYS_SURFACE_DESTROY,
@@ -461,6 +464,53 @@ pub fn sys_ipc_recv(out: &mut KwmMsg, flags: u32) -> isize {
             in("rax") SYS_IPC_RECV,
             in("rdi") out as *mut KwmMsg as u64,
             in("rsi") flags as u64,
+            lateout("rax") ret,
+            options(nostack, preserves_flags)
+        );
+    }
+    ret
+}
+
+/// Claim compositor authority (KDP). Only the first caller succeeds.
+/// Returns 0 on success, negative errno if already claimed.
+#[inline(always)]
+pub fn sys_claim_compositor() -> isize {
+    let ret: isize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_CLAIM_COMPOSITOR,
+            lateout("rax") ret,
+            options(nostack, preserves_flags)
+        );
+    }
+    ret
+}
+
+/// Composite all surfaces in z-order and flush to hardware.
+/// Only the registered compositor may call. Returns 0 or negative errno.
+#[inline(always)]
+pub fn sys_composite_all() -> isize {
+    let ret: isize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_COMPOSITE_ALL,
+            lateout("rax") ret,
+            options(nostack, preserves_flags)
+        );
+    }
+    ret
+}
+
+/// Get the PID of the registered KDP compositor. Returns pid or negative errno.
+#[inline(always)]
+pub fn sys_get_compositor_pid() -> isize {
+    let ret: isize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_GET_COMPOSITOR_PID,
             lateout("rax") ret,
             options(nostack, preserves_flags)
         );

@@ -1,4 +1,4 @@
-# Build artifacts
+# ── Build artifacts ───────────────────────────────────────────────────────────
 target/
 build/
 buildhall/output/
@@ -6,15 +6,23 @@ buildhall/output/
 # Compiled binaries / objects
 c-sdk/build/
 
-# Editor / IDE
+# QEMU / VM disk images
+*.img
+*.iso
+
+# ── Editor / IDE ──────────────────────────────────────────────────────────────
 .cursor/
 .idea/
 *.swp
 *.swo
 .DS_Store
+*.orig
 
-# Claude local settings
+# ── Claude local settings ─────────────────────────────────────────────────────
 .claude/
 
-# Rust
+# ── Rust ──────────────────────────────────────────────────────────────────────
 **/*.rs.bk
+
+# reference/ crates have their own Cargo.lock — don't track them
+reference/*/target/

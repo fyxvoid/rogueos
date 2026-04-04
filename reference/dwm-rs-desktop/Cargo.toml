@@ -1,0 +1,10 @@
+[package]
+name = "dwm-rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["Rogue Linux Team"]
+description = "Rust port of dwm (dynamic window manager) — x11rb, reference/parity with C dwm"
+license-file = "LICENSE"
+
+[dependencies]
+x11rb = { version = "0.13", features = ["allow-unsafe-code"] }

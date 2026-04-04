@@ -17,6 +17,8 @@ const SCREEN_H: u32 = crate::drivers::framebuffer::FB_HEIGHT;
 struct SurfaceSlot {
     /// Stable surface identifier. 0 = free.
     id: u32,
+    /// PID of the process that created this surface (the "owner"). Only the owner may attach.
+    owner_pid: u32,
     /// Attached pixel buffer: (ptr, width, height, stride_bytes).
     buffer: Option<(*const u8, u32, u32, u32)>,
     /// Z-order: lower value is drawn first (further back).
@@ -25,9 +27,14 @@ struct SurfaceSlot {
 
 impl SurfaceSlot {
     const fn empty() -> Self {
-        Self { id: 0, buffer: None, z: 0 }
+        Self { id: 0, owner_pid: 0, buffer: None, z: 0 }
     }
 }
+
+/// PID of the process that has claimed compositor authority (SYS_CLAIM_COMPOSITOR).
+/// Only this PID may call surface_commit or composite_all.
+/// None = no compositor registered yet (permissive mode for backwards compat).
+static mut COMPOSITOR_PID: Option<u32> = None;
 
 static mut SLOTS: [SurfaceSlot; MAX_SURFACES] = [
     SurfaceSlot::empty(), SurfaceSlot::empty(), SurfaceSlot::empty(), SurfaceSlot::empty(),
@@ -41,9 +48,27 @@ static mut NEXT_ID: u32 = 1;
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-/// Allocate a new surface.  Returns the surface's stable ID, or `None` if all
-/// slots are occupied.
-pub fn surface_create() -> Option<u32> {
+/// Register `pid` as the compositor. Returns `true` on first call (success),
+/// `false` if a compositor is already registered.
+pub fn claim_compositor(pid: u32) -> bool {
+    unsafe {
+        if COMPOSITOR_PID.is_none() {
+            COMPOSITOR_PID = Some(pid);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Return the PID of the registered compositor, or `None` if not yet claimed.
+pub fn get_compositor_pid() -> Option<u32> {
+    unsafe { COMPOSITOR_PID }
+}
+
+/// Allocate a new surface owned by `owner_pid`.
+/// Returns the surface's stable ID, or `None` if all slots are occupied.
+pub fn surface_create(owner_pid: u32) -> Option<u32> {
     unsafe {
         for slot in &mut SLOTS {
             if slot.id == 0 {
@@ -51,6 +76,7 @@ pub fn surface_create() -> Option<u32> {
                 NEXT_ID = NEXT_ID.wrapping_add(1);
                 if NEXT_ID == 0 { NEXT_ID = 1; } // skip 0 sentinel
                 slot.id = id;
+                slot.owner_pid = owner_pid;
                 slot.buffer = None;
                 slot.z = 0;
                 return Some(id);
@@ -72,16 +98,20 @@ pub fn surface_destroy(id: u32) {
     }
 }
 
-/// Attach a 32bpp ARGB pixel buffer to a surface.  The WM owns the buffer
-/// memory; the kernel only stores the pointer for the next `commit` call.
-/// Returns `false` for unknown `id` or invalid geometry.
-pub fn surface_attach(id: u32, ptr: *const u8, width: u32, height: u32, stride: u32) -> bool {
+/// Attach a 32bpp ARGB pixel buffer to a surface.
+/// `caller_pid` must match the surface's `owner_pid`; returns `false` on ownership mismatch.
+/// Returns `false` for unknown `id`, invalid geometry, or ownership violation.
+pub fn surface_attach(id: u32, ptr: *const u8, width: u32, height: u32, stride: u32, caller_pid: u32) -> bool {
     if ptr.is_null() || width == 0 || height == 0 || stride < width * 4 {
         return false;
     }
     unsafe {
         for slot in &mut SLOTS {
             if slot.id == id {
+                // Enforce: only the surface owner may attach a buffer.
+                if slot.owner_pid != 0 && slot.owner_pid != caller_pid {
+                    return false;
+                }
                 slot.buffer = Some((ptr, width, height, stride));
                 return true;
             }
@@ -91,8 +121,17 @@ pub fn surface_attach(id: u32, ptr: *const u8, width: u32, height: u32, stride: 
 }
 
 /// Blit a surface's attached buffer to the framebuffer at `(dst_x, dst_y)`.
-/// Returns `false` if the surface has no buffer or the ID is unknown.
-pub fn surface_commit(id: u32, dst_x: u32, dst_y: u32) -> bool {
+/// `caller_pid` must equal the registered compositor PID (if one is registered).
+/// Returns `false` if the surface has no buffer, the ID is unknown, or caller is not compositor.
+pub fn surface_commit(id: u32, dst_x: u32, dst_y: u32, caller_pid: u32) -> bool {
+    // Compositor enforcement: if a compositor is registered, only it may commit.
+    unsafe {
+        if let Some(comp_pid) = COMPOSITOR_PID {
+            if caller_pid != comp_pid {
+                return false;
+            }
+        }
+    }
     let buf = unsafe {
         let mut found = None;
         for slot in &SLOTS {
@@ -170,8 +209,8 @@ pub fn surface_count() -> usize {
 // ── Legacy shim (kept for backwards compat with old display_server callers) ──
 
 /// Kept so existing code that calls `client_connect()` still compiles.
-/// New code should use `surface_create()` directly.
+/// New code should use `surface_create(owner_pid)` directly.
 #[allow(dead_code)]
 pub fn client_connect() -> Option<u32> {
-    surface_create()
+    surface_create(0)
 }

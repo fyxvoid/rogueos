@@ -1,9 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
+  # Shared ABI (kernel ↔ userland)
   "lib",
+  # Bare-metal kernel + bootloader
   "kernel",
   "boot",
+  # Userland runtime, syscall wrappers, and system binaries
   "userland",
   "userland/core",
   "userland/compositor",
@@ -13,6 +16,10 @@ members = [
   "userland/rwm-core",
   "userland/rwm-desktop",
   "userland/kapp",
+  # Kingdom-native graphical applications
+  "apps/rogue-clip",
+  "apps/rogue-lock",
+  "apps/rogue-shot",
 ]
 
 [profile.release]
