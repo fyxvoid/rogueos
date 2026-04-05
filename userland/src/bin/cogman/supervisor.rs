@@ -263,28 +263,43 @@ pub enum ControlFlow {
     Reboot,
 }
 
+// ── Program IDs (must match kernel/init/programs.rs) ─────────────────────
+pub const PROG_SHELL:   u32 = 0;
+pub const PROG_RWM:     u32 = 1;
+pub const PROG_EDITOR:  u32 = 2;
+pub const PROG_VIEWER:  u32 = 3;
+pub const PROG_COPY:    u32 = 4;
+pub const PROG_MONITOR: u32 = 5;
+pub const PROG_SHUTDOWN:u32 = 6;
+pub const PROG_EXIT:    u32 = 7;
+pub const PROG_SESSION: u32 = 8;
+pub const PROG_WM:      u32 = 9;
+pub const PROG_COGMAN:  u32 = 10;
+pub const PROG_NOVA:    u32 = 11;
+
 // ── Default service definitions ───────────────────────────────────────────
 
 pub fn default_supervisor() -> Supervisor {
     let mut sv = Supervisor::new();
 
-    // Session manager: needs display, input, ipc, shm, spawn (to launch shell/wm).
-    sv.register(Service::new(8, b"session",
+    // Nova compositor: display, input, compositor, spawn, ipc, shm.
+    // Auto-started as the primary display compositor.
+    sv.register(Service::new(PROG_NOVA, b"nova",
+        RestartPolicy::Always, true,
+        cap::COMPOSITOR_WM));
+
+    // Session manager: needs display, input, ipc, shm, spawn (to launch apps).
+    sv.register(Service::new(PROG_SESSION, b"session",
         RestartPolicy::Always, true,
         cap::DISPLAY | cap::INPUT | cap::IPC_SEND | cap::IPC_RECV | cap::SHM | cap::SPAWN | cap::FS_READ));
 
     // Shell: spawn, fs read/write, ipc, display, input.
-    sv.register(Service::new(0, b"shell",
+    sv.register(Service::new(PROG_SHELL, b"shell",
         RestartPolicy::OnFailure, false,
         cap::SHELL));
 
-    // Desktop WM / compositor: display, input, compositor, spawn, ipc, shm.
-    sv.register(Service::new(1, b"wm",
-        RestartPolicy::OnFailure, false,
-        cap::COMPOSITOR_WM));
-
     // Monitor: read-only process info + display.
-    sv.register(Service::new(5, b"monitor",
+    sv.register(Service::new(PROG_MONITOR, b"monitor",
         RestartPolicy::Never, false,
         cap::PROC_INFO | cap::DISPLAY | cap::IPC_SEND | cap::IPC_RECV));
 

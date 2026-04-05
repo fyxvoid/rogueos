@@ -1,0 +1,13 @@
+# Workspace-level Cargo config.
+# Applied when building from the workspace root (cargo build -p kernel, etc.)
+
+# Kernel target: bare-metal x86_64, static relocation model, no PIE.
+# The kernel is linked at a fixed physical address (1 MB) via linker.ld,
+# so position-independent code and dynamic relocations are unnecessary and
+# break the inline assembly in syscall_entry.rs (R_X86_64_32S against BSS).
+[target.x86_64-unknown-none]
+rustflags = [
+    "-C", "relocation-model=static",
+    "-C", "link-arg=--noinhibit-exec",
+]
+linker = "rust-lld"

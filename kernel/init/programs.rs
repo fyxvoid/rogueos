@@ -1,8 +1,8 @@
 //! Program registry for SYS_SPAWN: program_id -> embedded ELF.
 
 // 0=shell, 1=rwm, 2=editor, 3=viewer, 4=copy, 5=monitor, 6=shutdown, 7=exit,
-// 8=session, 9=wm-legacy, 10=cogman (self-spawn slot)
-const MAX_PROGRAMS: usize = 11;
+// 8=session, 9=wm-legacy, 10=cogman (self-spawn slot), 11=nova
+const MAX_PROGRAMS: usize = 12;
 static mut PROGRAMS: [Option<&'static [u8]>; MAX_PROGRAMS] = [None; MAX_PROGRAMS];
 
 /// Register an ELF for the given program id. Called from kernel_main at init.

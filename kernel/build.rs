@@ -46,6 +46,7 @@ fn main() {
     let exit_dst = out_dir.join("exit.elf");
     let rwm_dst = out_dir.join("rwm.elf");
     let cogman_dst = out_dir.join("cogman.elf");
+    let nova_dst = out_dir.join("nova.elf");
     if is_kernel_target {
         let init_src = workspace.join("target/x86_64-unknown-none/release/init");
         let shell_src = workspace.join("target/x86_64-unknown-none/release/shell");
@@ -59,6 +60,7 @@ fn main() {
         let exit_src = workspace.join("target/x86_64-unknown-none/release/exit");
         let rwm_src    = workspace.join("target/x86_64-unknown-none/release/rwm");
         let cogman_src = workspace.join("target/x86_64-unknown-none/release/cogman");
+        let nova_src   = workspace.join("target/x86_64-unknown-none/release/nova");
         if init_src.exists() {
             let _ = std::fs::copy(&init_src, &init_dst);
         } else {
@@ -119,6 +121,11 @@ fn main() {
         } else {
             let _ = std::fs::write(&cogman_dst, &[]);
         }
+        if nova_src.exists() {
+            let _ = std::fs::copy(&nova_src, &nova_dst);
+        } else {
+            let _ = std::fs::write(&nova_dst, &[]);
+        }
     } else {
         let _ = std::fs::write(&init_dst, &[]);
         let _ = std::fs::write(&shell_dst, &[]);
@@ -132,5 +139,6 @@ fn main() {
         let _ = std::fs::write(&exit_dst, &[]);
         let _ = std::fs::write(&rwm_dst, &[]);
         let _ = std::fs::write(&cogman_dst, &[]);
+        let _ = std::fs::write(&nova_dst, &[]);
     }
 }

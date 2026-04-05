@@ -24,6 +24,8 @@ const MONITOR_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/monitor.elf
 const SHUTDOWN_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shutdown.elf"));
 /// Embedded exit ELF (stress test: binary that only SYS_EXIT(0)).
 const EXIT_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/exit.elf"));
+/// Nova compositor ELF — dwm-style WM with embedded bitmap font.
+const NOVA_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nova.elf"));
 
 /// Set true to run stress: 10 sequential exit processes before init. System halts after 10th exit.
 const STRESS_EXIT_FIRST: bool = false;
@@ -170,6 +172,7 @@ pub extern "sysv64" fn kernel_main(bootinfo: *const libs::BootInfo) -> ! {
     crate::kernel::programs::register(8, SESSION_ELF);    // PROG_SESSION
     crate::kernel::programs::register(9, WM_ELF);         // PROG_WM_LEGACY
     crate::kernel::programs::register(10, COGMAN_ELF);    // PROG_COGMAN (self-spawn slot)
+    crate::kernel::programs::register(11, NOVA_ELF);      // PROG_NOVA
 
     // Stress (optional): 10 sequential short-lived exit processes.
     if STRESS_EXIT_FIRST {

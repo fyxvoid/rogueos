@@ -13,11 +13,11 @@ BUILD_DIR="${BUILD_DIR:-$ROOT/build/uefi-boot}"
 mkdir -p "$BUILD_DIR/EFI/boot"
 
 if [ -z "$SKIP_BUILD" ]; then
-  echo "Building userland shell..."
-  cargo build -p userland --release --target x86_64-unknown-none --bin shell 2>/dev/null || true
+  echo "Building userland (all binaries)..."
+  cargo build -p userland --release --target x86_64-unknown-none 2>/dev/null || true
 
   echo "Building kernel..."
-  RUSTFLAGS="-C relocation-model=static -C link-arg=-no-pie" cargo build -p kernel --release --target x86_64-unknown-none --bin kernel
+  cargo build -p kernel --release --target x86_64-unknown-none --bin kernel
 
   echo "Building UEFI bootloader..."
   cargo build -p boot --target x86_64-unknown-uefi --release 2>/dev/null || true
