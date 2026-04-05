@@ -21,6 +21,7 @@ use libs::{
     SYS_UNLINK, SYS_WAITPID, SYS_WRITE,
     SYS_CAP_GRANT, SYS_CAP_REVOKE, SYS_CAP_QUERY,
     SYS_JOURNAL_WRITE, SYS_JOURNAL_READ,
+    SYS_MMAP, SYS_MUNMAP,
 };
 
 #[cfg(not(test))]
@@ -330,6 +331,39 @@ pub fn sys_journal_read(buf: &mut [u8]) -> isize {
             in("rax") SYS_JOURNAL_READ,
             in("rdi") buf.as_mut_ptr() as u64,
             in("rsi") buf.len() as u64,
+            lateout("rax") ret,
+            options(nostack, preserves_flags)
+        );
+    }
+    ret
+}
+
+/// Allocate `pages` anonymous private pages. Returns virtual address or negative errno.
+/// Use `libs::prot::*` flags (READ | WRITE | EXEC).
+pub fn sys_mmap(pages: usize, prot: u32) -> isize {
+    let ret: isize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_MMAP,
+            in("rdi") pages as u64,
+            in("rsi") prot as u64,
+            lateout("rax") ret,
+            options(nostack, preserves_flags)
+        );
+    }
+    ret
+}
+
+/// Unmap `pages` pages starting at `va` (must be a previous `sys_mmap` base).
+pub fn sys_munmap(va: u64, pages: usize) -> isize {
+    let ret: isize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_MUNMAP,
+            in("rdi") va,
+            in("rsi") pages as u64,
             lateout("rax") ret,
             options(nostack, preserves_flags)
         );

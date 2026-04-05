@@ -8,6 +8,7 @@ mod gfx;
 mod io;
 mod ipc;
 mod misc;
+pub(crate) mod mmap;
 mod perf;
 mod process;
 
@@ -30,6 +31,8 @@ use libs::{
     // Capability + journal
     SYS_CAP_GRANT, SYS_CAP_REVOKE, SYS_CAP_QUERY,
     SYS_JOURNAL_WRITE, SYS_JOURNAL_READ,
+    // Memory management
+    SYS_MMAP, SYS_MUNMAP,
     cap,
 };
 
@@ -181,6 +184,10 @@ pub extern "C" fn syscall_dispatch(
                 0
             }
         }
+
+        // ── Anonymous memory (vision: process-controlled address space) ──
+        SYS_MMAP   => user_ptr::result_to_rax(mmap::sys_mmap(a1, a2),   |v| v, |e| e.0),
+        SYS_MUNMAP => user_ptr::result_to_rax(mmap::sys_munmap(a1, a2), |v| v, |e| e.0),
 
         // ── Capability management ─────────────────────────────────────────
         SYS_CAP_GRANT  => user_ptr::result_to_rax(

@@ -87,6 +87,33 @@ pub const SYS_PERF_CLOSE: u64 = 0x412;
 /// Set nice level for current process. Args: nice(i64, -20..+19). Returns 0 on success.
 pub const SYS_SET_NICE: u64 = 0x420;
 
+// ── Memory management syscalls (namespace 0x430) ──────────────────────
+//
+// SYS_MMAP: allocate private anonymous pages in the caller's address space.
+// The kernel assigns virtual addresses (caller cannot pick; avoids aliasing).
+// Returns the mapped virtual address on success, SYSERR_NOMEM on failure.
+//
+// SYS_MUNMAP: release a previously mmap'd region.
+//
+// These are the foundation for heap allocators, guard pages, and shared
+// memory beyond SHM — the building blocks for true process isolation.
+
+/// Map `pages` anonymous pages into the caller's address space.
+/// Args: pages (usize), prot (u32: PROT_READ|PROT_WRITE|PROT_EXEC).
+/// Returns mapped virtual address or negative errno.
+pub const SYS_MMAP:   u64 = 0x430;
+/// Unmap a region previously returned by SYS_MMAP.
+/// Args: va (u64), pages (usize). Returns 0 or negative errno.
+pub const SYS_MUNMAP: u64 = 0x431;
+
+/// Protection flags for SYS_MMAP.
+pub mod prot {
+    pub const READ:  u32 = 1 << 0;
+    pub const WRITE: u32 = 1 << 1;
+    pub const EXEC:  u32 = 1 << 2;
+    pub const NONE:  u32 = 0;
+}
+
 // ── Capability syscalls (namespace 0x500) ──────────────────────────────
 //
 // CAP_GRANT / CAP_REVOKE are guarded by CAP_GRANT in the calling process.

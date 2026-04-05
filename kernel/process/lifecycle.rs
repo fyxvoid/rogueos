@@ -35,8 +35,15 @@ pub fn create_user_process(elf_data: &[u8], caps: CapSet) -> Option<usize> {
     crate::arch::serial::write_str("\r\n");
     crate::arch::serial::write_str("[KRN] user_create: alloc_slot\r\n");
     let (idx, pid_val) = pid::allocate_process_slot()?;
-    crate::arch::serial::write_str("[KRN] user_create: use_kernel_cr3\r\n");
-    let cr3 = crate::memory::paging::read_cr3();
+    // Each process gets its own page tables — kernel mappings are shared
+    // (shallow-copied from KERNEL_CR3); user VA range is fresh and isolated.
+    crate::arch::serial::write_str("[KRN] user_create: create_process_cr3\r\n");
+    let cr3 = crate::memory::paging::create_process_cr3();
+    if cr3 == 0 {
+        crate::arch::serial::write_str("[KRN] user_create: create_process_cr3_failed\r\n");
+        pid::release_slot(idx);
+        return None;
+    }
     crate::arch::serial::write_str("[KRN] user_create: load_elf\r\n");
     let load = match loader::load_elf(elf_data, cr3) {
         Some(r) => r,
@@ -163,6 +170,7 @@ pub fn create_user_process(elf_data: &[u8], caps: CapSet) -> Option<usize> {
         trap_frame,
     );
     pcb.caps = caps;
+    pcb.pcid = crate::memory::paging::alloc_pcid();
     crate::arch::serial::write_str("[KRN] user_create: caps=");
     crate::arch::serial::write_hex(caps.bits);
     crate::arch::serial::write_str("\r\n");
@@ -309,6 +317,8 @@ pub fn exit_current_and_schedule(exit_status: Option<i32>) -> ! {
     };
     let exiting_pid = pid::get_descriptor(current_idx).map(|p| p.pid).unwrap_or(0);
     crate::fs::close_fds_for_process(exiting_pid);
+    // Reset anonymous memory bump pointer for this slot.
+    crate::syscall::dispatcher::mmap::reset_anon_for_slot(current_idx);
     // Release any perf counters this process held.
     crate::arch::x86_64::perf::perf_close_for_process(current_idx);
     // Clear hardware breakpoints so they don't fire in the next process.

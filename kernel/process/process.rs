@@ -76,6 +76,10 @@ pub struct ProcessDescriptor {
     pub hw_bp: HwBpState,
     /// PID this process is blocked waiting for (u32::MAX = any child). None if not blocked.
     pub waiting_for: Option<Pid>,
+    /// PCID (Process Context Identifier, bits 0-11 of CR3 when CR4.PCIDE=1).
+    /// 0 = PCID not in use. Assigned by paging::alloc_pcid() at spawn time.
+    /// Reserved for the future context-switch path; not yet written to CR3.
+    pub pcid: u16,
     /// Capability bitmask. Controls which syscalls this process may invoke.
     /// Cogman (pid 1) is born with `CapSet::all()`; every other process starts
     /// with the intersection of its parent's caps and the requested spawn mask.
@@ -104,6 +108,7 @@ impl ProcessDescriptor {
             exit_status: None,
             hw_bp: HwBpState::new(),
             waiting_for: None,
+            pcid: 0,
             caps: CapSet::none(), // caller must set appropriate caps after construction
         }
     }

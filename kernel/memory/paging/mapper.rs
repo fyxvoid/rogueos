@@ -387,6 +387,23 @@ pub fn unmap_page(va: u64) {
     }
 }
 
+/// Unmap a single 4K page in the given address space (by CR3).
+pub fn unmap_page_in_space(cr3: u64, va: u64) {
+    let pml4 = page_table::phys_to_virt_table(cr3 & FRAME_MASK) as *mut Table;
+    unsafe {
+        let e = (*pml4).get(levels::pml4_index(va));
+        if (e & PageFlag::Present as u64) == 0 { return; }
+        let pdpt = page_table::phys_to_virt_table(e & FRAME_MASK) as *mut Table;
+        let e = (*pdpt).get(levels::pdpt_index(va));
+        if (e & PageFlag::Present as u64) == 0 { return; }
+        let pd = page_table::phys_to_virt_table(e & FRAME_MASK) as *mut Table;
+        let e = (*pd).get(levels::pd_index(va));
+        if (e & PageFlag::Present as u64) == 0 { return; }
+        let pt = page_table::phys_to_virt_table(e & FRAME_MASK) as *mut Table;
+        (*pt).set(levels::pt_index(va), 0);
+    }
+}
+
 /// Identity-map a physical range (current space). Uses 1GB, 2MB, then 4KB pages where aligned.
 pub fn identity_map_range(pa_start: u64, len: usize) -> bool {
     let flags = EntryFlags::kernel_rw().as_u64();
@@ -437,6 +454,162 @@ pub fn new_address_space() -> u64 {
         pa
     } else {
         0
+    }
+}
+
+// ── Per-process CR3 (the vision core) ─────────────────────────────────────
+//
+// Every process has its own PML4.  The kernel's code + identity map entries
+// are shared (shallow-copied from KERNEL_CR3) so the kernel can run in any
+// process's address space during syscalls.  All user-VA subtrees (PML4[0]
+// below 0x400000 = kernel; PD[2..511] = user code/data; PML4[255] = user
+// stack) are fresh zeroed tables, ensuring complete isolation between
+// processes that load at the same virtual address.
+//
+// Address-space layout recap:
+//   PML4[0] → PDPT[0] → PD[0..1]  : 0x000000–0x3FFFFF  kernel identity map
+//                      PD[2..511] : 0x400000+           user code/data  ← per-process
+//   PML4[1..254]                   : covered by kernel identity/frame map
+//   PML4[255] → (user stack)       : 0x7fff_ffff_f000   ← per-process
+
+/// Saved after paging::init() so every new process can inherit kernel
+/// mappings without re-doing the identity map.
+static mut KERNEL_CR3: u64 = 0;
+
+/// Called by paging::init() after the kernel CR3 is live.
+pub fn set_kernel_cr3(cr3: u64) {
+    unsafe { KERNEL_CR3 = cr3; }
+}
+
+/// The kernel's CR3, for use by diagnostics and process creation.
+pub fn get_kernel_cr3() -> u64 {
+    unsafe { KERNEL_CR3 }
+}
+
+/// Allocate a fresh per-process address space that:
+///
+/// 1. Shares all kernel PML4 mappings (shallow copy of PML4 entries from
+///    KERNEL_CR3) so the kernel runs correctly in this space during syscalls.
+/// 2. Gives the process a clean user-VA region: PD[2..511] (covers
+///    USER_LOAD_BASE = 0x400000 and above, within the first 1GB) are zeroed.
+/// 3. Clears PML4[255] (user stack range 0x7fff_...) so the stack is
+///    exclusive to this process.
+///
+/// Returns the new CR3 value, or 0 on allocation failure.
+pub fn create_process_cr3() -> u64 {
+    let kernel_cr3 = unsafe { KERNEL_CR3 };
+    if kernel_cr3 == 0 {
+        #[cfg(not(test))]
+        crate::arch::x86_64::serial::write_str("[PAGING] create_process_cr3: KERNEL_CR3 not set\r\n");
+        return 0;
+    }
+
+    unsafe {
+        let kernel_pml4 = page_table::phys_to_virt_table(kernel_cr3 & FRAME_MASK) as *mut Table;
+
+        // 1. Allocate + zero fresh PML4.
+        let new_pml4_pa = match alloc_table_page() { Some(p) => p, None => return 0 };
+        let new_pml4 = page_table::phys_to_virt_table(new_pml4_pa) as *mut Table;
+        core::ptr::copy_nonoverlapping(kernel_pml4 as *const u8, new_pml4 as *mut u8, PAGE_SIZE);
+
+        // 2. Deep-copy PML4[0] → fresh PDPT so user modifications don't touch
+        //    the kernel's shared PDPT.
+        let kpml4_e0 = (*kernel_pml4).get(0);
+        if (kpml4_e0 & PageFlag::Present as u64) != 0 {
+            let kernel_pdpt = page_table::phys_to_virt_table(kpml4_e0 & FRAME_MASK) as *mut Table;
+
+            let new_pdpt_pa = match alloc_table_page() { Some(p) => p, None => return 0 };
+            let new_pdpt = page_table::phys_to_virt_table(new_pdpt_pa) as *mut Table;
+            core::ptr::copy_nonoverlapping(kernel_pdpt as *const u8, new_pdpt as *mut u8, PAGE_SIZE);
+
+            // Update PML4[0] to point to the fresh PDPT (same flags).
+            let flags0 = kpml4_e0 & !FRAME_MASK;
+            (*new_pml4).set(0, (new_pdpt_pa & FRAME_MASK) | flags0);
+
+            // 3. Deep-copy PDPT[0] → fresh PD so each process gets its own
+            //    PD[2..511] (covering USER_LOAD_BASE = 0x400000 and above).
+            let kpdpt_e0 = (*kernel_pdpt).get(0);
+            if (kpdpt_e0 & PageFlag::Present as u64) != 0 && (kpdpt_e0 & PDPTE_PS) == 0 {
+                let kernel_pd = page_table::phys_to_virt_table(kpdpt_e0 & FRAME_MASK) as *mut Table;
+
+                let new_pd_pa = match alloc_table_page() { Some(p) => p, None => return 0 };
+                let new_pd = page_table::phys_to_virt_table(new_pd_pa) as *mut Table;
+                core::ptr::copy_nonoverlapping(kernel_pd as *const u8, new_pd as *mut u8, PAGE_SIZE);
+
+                // Zero PD[2..511] — everything at VA ≥ 0x400000 within this PD.
+                // USER_LOAD_BASE = 0x400000 → pd_index = 2.
+                for i in 2..levels::ENTRY_COUNT {
+                    (*new_pd).set(i, 0);
+                }
+
+                // Update PDPT[0] to point to fresh PD.
+                let flags_pd = kpdpt_e0 & !FRAME_MASK;
+                (*new_pdpt).set(0, (new_pd_pa & FRAME_MASK) | flags_pd);
+            }
+        }
+
+        // 4. Clear PML4[255] — user stack (0x7fff_ffff_f000) lives here.
+        //    The kernel never maps anything there so it was likely already 0,
+        //    but be explicit to guarantee isolation.
+        (*new_pml4).set(255, 0);
+
+        #[cfg(not(test))]
+        {
+            crate::arch::x86_64::serial::write_str("[PAGING] new process CR3=");
+            crate::arch::serial::write_hex(new_pml4_pa);
+            crate::arch::serial::write_str("\r\n");
+        }
+
+        new_pml4_pa
+    }
+}
+
+// ── PCID (Process-Context Identifier) / ASID ─────────────────────────────
+//
+// PCID tags each TLB entry with a 12-bit identifier so the CPU can keep
+// entries for multiple address spaces simultaneously. Without PCID, every
+// CR3 load flushes the entire TLB — expensive for high-frequency syscalls.
+//
+// The vision: assign a PCID per process and set CR3 with bit 63 = 1 (no
+// TLB flush on CR3 load) when switching contexts. This brings context-
+// switch overhead close to zero for TLB-warm workloads.
+//
+// Current status: barebone — we detect PCID, allocate IDs, but do not yet
+// write CR3 with PCID bits (that requires the full scheduler context-switch
+// path). The infrastructure is here so the scheduler can opt in.
+
+/// Next PCID to assign. PCIDs are 1-4095; 0 is reserved (global/kernel).
+static mut NEXT_PCID: u16 = 1;
+
+/// Whether the CPU supports CR4.PCIDE (PCID feature).
+static mut PCID_SUPPORTED: bool = false;
+
+/// Probe CPUID leaf 1 ECX bit 17 for PCID support. Call once at boot.
+pub fn probe_pcid() -> bool {
+    let ecx: u32;
+    unsafe {
+        core::arch::asm!(
+            "push rbx",
+            "cpuid",
+            "pop rbx",
+            in("eax") 1u32,
+            out("ecx") ecx,
+            options(nostack, preserves_flags)
+        );
+        let supported = (ecx >> 17) & 1 != 0;
+        PCID_SUPPORTED = supported;
+        supported
+    }
+}
+
+/// Allocate the next PCID for a new process. Wraps at 4095 (re-use requires
+/// TLB flush on the retiring process — future scheduler responsibility).
+pub fn alloc_pcid() -> u16 {
+    unsafe {
+        if !PCID_SUPPORTED { return 0; }
+        let id = NEXT_PCID;
+        NEXT_PCID = if NEXT_PCID >= 4094 { 1 } else { NEXT_PCID + 1 };
+        id
     }
 }
 
@@ -745,6 +918,19 @@ pub fn init() {
     }
     tlb::flush_address(tlb::VirtAddr::new(start));
     crate::memory::physical::buddy::build_initial_freelist();
+
+    // Save kernel CR3 so create_process_cr3() can inherit mappings.
+    set_kernel_cr3(cr3_now);
+
+    // Probe PCID support for future zero-overhead context switching.
+    let has_pcid = probe_pcid();
+    #[cfg(not(test))]
+    {
+        crate::arch::x86_64::serial::write_str("[KRN] PCID_supported=");
+        crate::arch::x86_64::serial::write_str(if has_pcid { "1" } else { "0" });
+        crate::arch::x86_64::serial::write_str("\r\n");
+    }
+
     #[cfg(not(test))]
     crate::arch::x86_64::serial::write_str("[KRN] paging_init_done\r\n");
 }

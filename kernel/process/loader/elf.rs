@@ -148,16 +148,21 @@ pub fn load_elf(elf_data: &[u8], cr3: u64) -> Option<LoadResult> {
             // pages the segment data starts at the page base (offset 0).
             let dest_offset = p_vaddr.saturating_sub(va) as usize;
 
-            // Backing page must be a physical frame (for PTE); PT_POOL is for table pages only. Use buddy allocator.
-            let (pa, _need_map, _existing_pte) = match paging::walk_pte(cr3, va) {
-                Some(pte) => (pte & FRAME_MASK, false, Some(pte)),
-                None => {
-                    let Some(pa) = physical::alloc_frame() else {
-                        serial::write_str("[KRN] load_elf: alloc_frame_failed\r\n");
-                        return None;
-                    };
-                    (pa, true, None)
-                }
+            // Per-process CR3: user VAs are always unmapped in a fresh address
+            // space, so we always allocate a new frame. We never re-use an
+            // existing mapping — that would clobber another process's pages.
+            // (walk_pte kept for diagnostics; we ignore a hit and alloc anyway.)
+            if let Some(_stale) = paging::walk_pte(cr3, va) {
+                serial::write_str("[KRN] load_elf: WARN stale PTE at va=");
+                serial::write_hex(va);
+                serial::write_str(" (shared CR3 path?)\r\n");
+            }
+            let pa = {
+                let Some(p) = physical::alloc_frame() else {
+                    serial::write_str("[KRN] load_elf: alloc_frame_failed\r\n");
+                    return None;
+                };
+                p
             };
 
             if copy_len > 0 {
