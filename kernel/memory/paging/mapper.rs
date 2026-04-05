@@ -103,8 +103,8 @@ fn get_or_alloc_pt(pd: *mut Table, pd_idx: usize) -> *mut Table {
 }
 
 use crate::memory::paging::levels::FRAME_MASK;
-/// Enough to identity-map 256 MiB (e.g. frame region): ~66 tables; 128 leaves headroom.
-const PT_POOL_PAGES: usize = 128;
+/// Enough to identity-map 512 MiB + per-process page tables: 512 pages.
+const PT_POOL_PAGES: usize = 512;
 static mut PT_POOL: [u8; PT_POOL_PAGES * PAGE_SIZE] = [0; PT_POOL_PAGES * PAGE_SIZE];
 static mut PT_POOL_NEXT: usize = 0;
 
@@ -127,22 +127,44 @@ pub fn alloc_table_page() -> Option<u64> {
 }
 
 /// Map one page in the given address space (by CR3). Does not switch CR3.
+/// If `flags` has the User bit, that bit is propagated to all intermediate
+/// page-table entries so CPL=3 instruction/data fetches are not rejected at
+/// the PML4/PDPT/PD level (x86-64 requires U=1 at every level for user access).
 pub fn map_page_into_space(cr3: u64, va: u64, pa: u64, flags: u64) -> bool {
+    let user_bit = PageFlag::User as u64;
     let pml4 = page_table::phys_to_virt_table(cr3 & FRAME_MASK) as *mut Table;
     unsafe {
         let pdpt = get_or_alloc_child(pml4, levels::pml4_index(va));
         if pdpt.is_null() {
             return false;
         }
+        // Propagate User bit into the PML4 entry so user-mode walks succeed.
+        if (flags & user_bit) != 0 {
+            let idx = levels::pml4_index(va);
+            let e = (*pml4).get(idx);
+            (*pml4).set(idx, e | user_bit);
+        }
         let pd = get_or_alloc_pd(pdpt, levels::pdpt_index(va));
         if pd.is_null() {
             return false;
+        }
+        // Propagate User bit into the PDPT entry.
+        if (flags & user_bit) != 0 {
+            let idx = levels::pdpt_index(va);
+            let e = (*pdpt).get(idx);
+            (*pdpt).set(idx, e | user_bit);
         }
         let pt = get_or_alloc_pt(pd, levels::pd_index(va));
         if pt.is_null() {
             return false;
         }
-        let entry = (pa & FRAME_MASK) | (flags & 0xFFF);
+        // Propagate User bit into the PD entry.
+        if (flags & user_bit) != 0 {
+            let idx = levels::pd_index(va);
+            let e = (*pd).get(idx);
+            (*pd).set(idx, e | user_bit);
+        }
+        let entry = (pa & FRAME_MASK) | (flags & !FRAME_MASK);
         (*pt).set(levels::pt_index(va), entry);
         true
     }
@@ -168,7 +190,7 @@ pub fn map_page_2mb_into_space(cr3: u64, va: u64, pa: u64, flags: u64) -> bool {
         if (e & PageFlag::Present as u64) != 0 && (e & PDE_PS) == 0 {
             return false;
         }
-        (*pd).set(idx, (pa & PDE_2MB_FRAME_MASK) | (flags & 0xFFF) | PDE_PS);
+        (*pd).set(idx, (pa & PDE_2MB_FRAME_MASK) | (flags & !FRAME_MASK) | PDE_PS);
         true
     }
 }
@@ -189,7 +211,7 @@ pub fn map_page_1gb_into_space(cr3: u64, va: u64, pa: u64, flags: u64) -> bool {
         if (e & PageFlag::Present as u64) != 0 && (e & PDPTE_PS) == 0 {
             return false;
         }
-        (*pdpt).set(idx, (pa & PDPTE_1GB_FRAME_MASK) | (flags & 0xFFF) | PDPTE_PS);
+        (*pdpt).set(idx, (pa & PDPTE_1GB_FRAME_MASK) | (flags & !FRAME_MASK) | PDPTE_PS);
         true
     }
 }
@@ -315,7 +337,8 @@ pub fn map_page(va: u64, pa: u64, flags: u64) -> bool {
             crate::arch::x86_64::serial::write_str(" set_pte\r\n");
         }
         // #endregion
-        (*pt).set(levels::pt_index(va), (pa & FRAME_MASK) | (flags & 0xFFF));
+        // Preserve both the low 12 flag bits AND bit 63 (NX/NoExec).
+        (*pt).set(levels::pt_index(va), (pa & FRAME_MASK) | (flags & !FRAME_MASK));
         // #region agent log
         #[cfg(not(test))]
         if pa == 0x1780000 {

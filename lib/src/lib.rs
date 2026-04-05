@@ -87,6 +87,86 @@ pub const SYS_PERF_CLOSE: u64 = 0x412;
 /// Set nice level for current process. Args: nice(i64, -20..+19). Returns 0 on success.
 pub const SYS_SET_NICE: u64 = 0x420;
 
+// ── Capability syscalls (namespace 0x500) ──────────────────────────────
+//
+// CAP_GRANT / CAP_REVOKE are guarded by CAP_GRANT in the calling process.
+// Cogman (pid 1) is born with ALL capabilities including CAP_GRANT.
+// Every other process starts with NONE and must be explicitly granted caps.
+
+/// Grant capability bits to a process.
+/// Args: target_pid (u32), cap_bits (u64). Requires CAP_GRANT.
+pub const SYS_CAP_GRANT:  u64 = 0x500;
+/// Revoke capability bits from a process.
+/// Args: target_pid (u32), cap_bits (u64). Requires CAP_GRANT.
+pub const SYS_CAP_REVOKE: u64 = 0x501;
+/// Query own capability bitmask. Returns cap_bits (u64) in rax.
+pub const SYS_CAP_QUERY:  u64 = 0x502;
+
+// ── Journal syscalls (namespace 0x510) ────────────────────────────────
+//
+// Cogman journals its supervisor state so a replacement instance can
+// resume with zero data loss in < 5 ms. Only the holder of CAP_JOURNAL
+// can write; any process with CAP_JOURNAL can read (so the new Cogman
+// instance can restore state on startup).
+
+/// Write bytes to the Cogman journal (overwrites; not append).
+/// Args: ptr (*const u8), len (usize). Requires CAP_JOURNAL.
+pub const SYS_JOURNAL_WRITE: u64 = 0x510;
+/// Read the current journal contents into caller buffer.
+/// Args: ptr (*mut u8), cap (usize). Returns bytes written. Requires CAP_JOURNAL.
+pub const SYS_JOURNAL_READ:  u64 = 0x511;
+
+// ── Capability bitmask constants ──────────────────────────────────────
+pub mod cap {
+    /// Spawn new processes via SYS_SPAWN.
+    pub const SPAWN:      u64 = 1 << 0;
+    /// Call SYS_REBOOT.
+    pub const REBOOT:     u64 = 1 << 1;
+    /// Access framebuffer: fb_clear/fill/flush/blit, surface ops, compositor.
+    pub const DISPLAY:    u64 = 1 << 2;
+    /// Read input events: SYS_POLL_INPUT / SYS_POLL_MOUSE.
+    pub const INPUT:      u64 = 1 << 3;
+    /// Send IPC messages: SYS_IPC_SEND.
+    pub const IPC_SEND:   u64 = 1 << 4;
+    /// Receive IPC messages: SYS_IPC_RECV.
+    pub const IPC_RECV:   u64 = 1 << 5;
+    /// Read files/directories: SYS_OPEN(O_RDONLY), SYS_READ, SYS_LIST_ROOT.
+    pub const FS_READ:    u64 = 1 << 6;
+    /// Write / modify files: SYS_WRITE, SYS_UNLINK, SYS_FSYNC.
+    pub const FS_WRITE:   u64 = 1 << 7;
+    /// Use AMD PMU performance counters: SYS_PERF_*.
+    pub const PERF:       u64 = 1 << 8;
+    /// Set hardware breakpoints: SYS_HW_BP_*.
+    pub const HW_BP:      u64 = 1 << 9;
+    /// Claim compositor / SYS_CLAIM_COMPOSITOR, SYS_COMPOSITE_ALL.
+    pub const COMPOSITOR: u64 = 1 << 10;
+    /// Grant or revoke capabilities on other processes: SYS_CAP_GRANT/REVOKE.
+    /// Only Cogman holds this at boot; it can delegate with restriction.
+    pub const GRANT:      u64 = 1 << 11;
+    /// Inspect process list: SYS_GET_PROC_INFO.
+    pub const PROC_INFO:  u64 = 1 << 12;
+    /// Read/write the Cogman restart journal: SYS_JOURNAL_*.
+    pub const JOURNAL:    u64 = 1 << 13;
+    /// Adjust own scheduling priority: SYS_SET_NICE.
+    pub const SCHED:      u64 = 1 << 14;
+    /// Send arbitrary signals / SYS_KILL (future). Gated separately from SPAWN.
+    pub const KILL:       u64 = 1 << 15;
+    /// SHM operations: SYS_SHM_CREATE / SYS_SHM_DESTROY.
+    pub const SHM:        u64 = 1 << 16;
+
+    /// All capabilities — only Cogman starts with this.
+    pub const ALL:  u64 = u64::MAX;
+    /// No capabilities — default for every spawned process.
+    pub const NONE: u64 = 0;
+
+    /// Typical desktop app: display + input + ipc + shm (no spawn, no fs write, no kill).
+    pub const DESKTOP_APP: u64 = DISPLAY | INPUT | IPC_SEND | IPC_RECV | SHM;
+    /// Shell: spawn + fs + ipc + display + input.
+    pub const SHELL: u64 = SPAWN | FS_READ | FS_WRITE | IPC_SEND | IPC_RECV | DISPLAY | INPUT;
+    /// WM / compositor: display + input + compositor + spawn + ipc + shm.
+    pub const COMPOSITOR_WM: u64 = DISPLAY | INPUT | COMPOSITOR | SPAWN | IPC_SEND | IPC_RECV | SHM;
+}
+
 /// Flag for SYS_IPC_RECV: return SYSERR_AGAIN immediately instead of blocking.
 pub const IPC_NONBLOCK: u32 = 0x01;
 
@@ -610,6 +690,13 @@ pub struct BootInfo {
     pub bootloader_version: u32,
     /// Reserved for future expansion; must be zeroed by the bootloader.
     pub _reserved: u32,
+    /// Physical address of the SMBIOS 3.x entry point structure (or 2.x if
+    /// 3.x is absent), as found in the UEFI configuration table. 0 if absent.
+    pub smbios_addr: u64,
+    /// Physical address of the EFI Runtime Services table, captured before
+    /// ExitBootServices. Valid as long as UEFI runtime memory regions remain
+    /// mapped. 0 if unavailable.
+    pub runtime_services_addr: u64,
 }
 
 #[cfg(test)]

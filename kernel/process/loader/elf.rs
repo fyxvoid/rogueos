@@ -144,7 +144,9 @@ pub fn load_elf(elf_data: &[u8], cr3: u64) -> Option<LoadResult> {
             };
             let page_bytes_left = (PAGE_SIZE as u64).min(end_va - va) as usize;
             let copy_len = core::cmp::min(page_bytes_left, file_bytes_left);
-            let dest_offset = (p_vaddr - va) as usize;
+            // For the first page the segment may start mid-page; for all subsequent
+            // pages the segment data starts at the page base (offset 0).
+            let dest_offset = p_vaddr.saturating_sub(va) as usize;
 
             // Backing page must be a physical frame (for PTE); PT_POOL is for table pages only. Use buddy allocator.
             let (pa, _need_map, _existing_pte) = match paging::walk_pte(cr3, va) {

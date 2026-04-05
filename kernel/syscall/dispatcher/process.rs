@@ -8,8 +8,12 @@ pub(super) fn sys_exit(status: i32) -> ! {
     crate::process::exit_current_and_schedule(Some(status));
 }
 
-pub(super) fn sys_spawn(program_id: u64) -> Result<u64, SysErr> {
-    match crate::process::spawn_by_program_id(program_id as u32) {
+/// SYS_SPAWN(program_id, cap_mask).
+/// cap_mask = 0 → inherit all parent caps (backwards-compatible).
+/// Requires CAP_SPAWN; child receives parent_caps & cap_mask.
+pub(super) fn sys_spawn(program_id: u64, cap_mask: u64) -> Result<u64, SysErr> {
+    crate::capability::require(libs::cap::SPAWN, "spawn")?;
+    match crate::process::spawn_by_program_id(program_id as u32, cap_mask) {
         Some(pid) => Ok(pid as u64),
         None => Err(SysErr::NOENT),
     }

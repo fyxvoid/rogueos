@@ -17,6 +17,8 @@ const IA32_LSTAR: u32 = 0xC000_0082;
 const IA32_FMASK: u32 = 0xC000_0084;
 
 const EFER_SCE: u64 = 1 << 0;
+/// EFER.NXE (bit 11): enable the No-Execute bit (bit 63) in page table entries.
+const EFER_NXE: u64 = 1 << 11;
 const RFLAGS_IF: u64 = 1 << 9;
 
 #[inline]
@@ -61,7 +63,7 @@ pub fn init_syscall_msrs(syscall_entry_addr: u64) {
     let star = (0x0008u64 << STAR_KERNEL_CS_SHIFT) | (0x0010u64 << STAR_SYSRET_BASE_SHIFT);
     unsafe {
         let efer = read_msr(IA32_EFER);
-        write_msr(IA32_EFER, efer | EFER_SCE);
+        write_msr(IA32_EFER, efer | EFER_SCE | EFER_NXE);
         write_msr(IA32_STAR, star);
         write_msr(IA32_LSTAR, syscall_entry_addr);
         write_msr(IA32_FMASK, RFLAGS_IF);

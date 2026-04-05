@@ -52,6 +52,8 @@ pub extern "sysv64" fn kernel_main(bootinfo: *const libs::BootInfo) -> ! {
     crate::arch::x86_64::msr::init_syscall_msrs(
         crate::arch::x86_64::syscall_entry::syscall_entry as *const () as u64,
     );
+    // Enable CPU security: CR0.WP, CR4.SMEP, CR4.UMIP (CPUID-gated).
+    crate::arch::x86_64::cpuid::init_cpu_security();
     crate::arch::serial::write_str("[KRN] step0: idt_gdt_syscall_ready\r\n");
 
     // Phase 0b: AMD SME — enable memory encryption BEFORE paging so C-bit is
@@ -82,6 +84,12 @@ pub extern "sysv64" fn kernel_main(bootinfo: *const libs::BootInfo) -> ! {
 
     crate::arch::serial::write_str("[KRN] mem_map_valid=");
     crate::arch::serial::write_hex(bi.mem_map_valid as u64);
+    crate::arch::serial::write_str(" rsdp=");
+    crate::arch::serial::write_hex(bi.rsdp_addr);
+    crate::arch::serial::write_str(" smbios=");
+    crate::arch::serial::write_hex(bi.smbios_addr);
+    crate::arch::serial::write_str(" rt_services=");
+    crate::arch::serial::write_hex(bi.runtime_services_addr);
     crate::arch::serial::write_str("\r\n");
 
     // Init physical allocator from UEFI memory map (or use fixed region when BootInfo map invalid).
@@ -171,7 +179,7 @@ pub extern "sysv64" fn kernel_main(bootinfo: *const libs::BootInfo) -> ! {
         if let Some(exit_elf) = crate::kernel::programs::get_elf(7) {
             if exit_elf.len() >= 4 && exit_elf[0..4] == [0x7f, b'E', b'L', b'F'] {
                 while n < 10 {
-                    match crate::process::create_user_process(exit_elf) {
+                    match crate::process::create_user_process(exit_elf, crate::capability::CapSet::none()) {
                         Some(idx) => {
                             indices[n] = idx;
                             n += 1;
@@ -201,7 +209,9 @@ pub extern "sysv64" fn kernel_main(bootinfo: *const libs::BootInfo) -> ! {
         crate::arch::serial::write_str("[KRN] step7: cogman not ready, falling back to steward init\r\n");
         INIT_ELF
     };
-    match crate::process::create_user_process(first_elf) {
+    // Cogman (init) is born with ALL capabilities — it is the root of the
+    // capability tree and the only process that can grant/revoke caps.
+    match crate::process::create_user_process(first_elf, crate::capability::CapSet::all()) {
         Some(idx) => {
             crate::arch::serial::write_str("[KRN] step7: init_idx=");
             crate::arch::serial::write_hex(idx as u64);

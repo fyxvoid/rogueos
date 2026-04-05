@@ -3,6 +3,7 @@
 use crate::memory::paging;
 use crate::memory::r#virtual as virt;
 use crate::arch::x86_64::debug_regs::HwBpState;
+use crate::capability::CapSet;
 use libs::{Uid, DEFAULT_SESSION_UID};
 
 // ---------------------------------------------------------------------------
@@ -75,6 +76,10 @@ pub struct ProcessDescriptor {
     pub hw_bp: HwBpState,
     /// PID this process is blocked waiting for (u32::MAX = any child). None if not blocked.
     pub waiting_for: Option<Pid>,
+    /// Capability bitmask. Controls which syscalls this process may invoke.
+    /// Cogman (pid 1) is born with `CapSet::all()`; every other process starts
+    /// with the intersection of its parent's caps and the requested spawn mask.
+    pub caps: CapSet,
 }
 
 impl ProcessDescriptor {
@@ -99,6 +104,7 @@ impl ProcessDescriptor {
             exit_status: None,
             hw_bp: HwBpState::new(),
             waiting_for: None,
+            caps: CapSet::none(), // caller must set appropriate caps after construction
         }
     }
 
@@ -126,7 +132,7 @@ pub type Pcb = ProcessDescriptor;
 pub const USER_LOAD_BASE: u64 = 0x400_000;
 /// User stack top (below this).
 pub const USER_STACK_TOP: u64 = 0x7fff_ffff_f000;
-pub(crate) const USER_STACK_PAGES: usize = 2;
+pub(crate) const USER_STACK_PAGES: usize = 8;
 /// Palace userland is no_std and does not use malloc; no USER_HEAP_START or heap region.
 /// If userland gains a heap later: define USER_HEAP_START, ensure no overlap with stack, map on demand.
 const PAGE_SIZE: usize = 4096;
@@ -149,7 +155,8 @@ pub fn setup_user_stack(cr3: u64) -> Option<u64> {
         let Some(pa) = virt::alloc_table_page() else {
             return None;
         };
-        let va = USER_STACK_TOP - (i as u64 * PAGE_SIZE as u64);
+        // Map pages BELOW RSP (i=0 → one page below stack top, i=1 → two pages below, etc.)
+        let va = USER_STACK_TOP - ((i as u64 + 1) * PAGE_SIZE as u64);
         if !virt::map_page_in_space(cr3, va, pa, flags) {
             return None;
         }

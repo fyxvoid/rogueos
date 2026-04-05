@@ -23,7 +23,7 @@ fn phys_to_virt(pa: u64) -> *mut u8 {
 }
 
 /// Maximum region size (pages) we support; bitmap is sized for this.
-pub(crate) const MAX_REGION_PAGES: usize = 65536; // 256 MiB
+pub(crate) const MAX_REGION_PAGES: usize = 131072; // 512 MiB
 const BITMAP_WORDS: usize = (MAX_REGION_PAGES + 63) / 64;
 
 static mut REGION_START: u64 = FRAME_REGION_BASE;
@@ -256,11 +256,21 @@ pub fn build_initial_freelist() {
             }
         }
     }
-    let mut order = 0;
-    while (1 << (order + 1)) <= pages {
-        order += 1;
+    // Walk the page count from largest order down, pushing a free block for each
+    // power-of-two chunk.  Capping at MAX_ORDER prevents FREE_LISTS OOB access
+    // when QEMU gives more RAM than the default FRAME_REGION_PAGES layout expects.
+    let mut remaining = pages;
+    let mut base = start;
+    while remaining > 0 {
+        let mut order = 0;
+        while order < MAX_ORDER && (1 << (order + 1)) <= remaining {
+            order += 1;
+        }
+        push_free(base, order);
+        let chunk = 1usize << order;
+        base += (chunk * PAGE_SIZE) as u64;
+        remaining = remaining.saturating_sub(chunk);
     }
-    push_free(start, order);
     #[cfg(not(test))]
     {
         use crate::memory::paging::mapper::debug_walk;

@@ -1,6 +1,7 @@
 //! Process lifecycle: spawn, exit, run first. Spawn-only; no fork/clone.
 
 use crate::arch::x86_64::gdt;
+use crate::capability::CapSet;
 use crate::memory::paging;
 use crate::process::context;
 use crate::process::loader;
@@ -25,9 +26,9 @@ fn elf_checksum(data: &[u8]) -> u64 {
     data.iter().fold(0u64, |acc, &b| acc ^ (b as u64))
 }
 
-/// Create the first user process: set up address space, load ELF, fill trap frame.
+/// Create a user process with the given capability set.
 /// Returns the process table index or None on failure.
-pub fn create_user_process(elf_data: &[u8]) -> Option<usize> {
+pub fn create_user_process(elf_data: &[u8], caps: CapSet) -> Option<usize> {
     let pre_checksum = elf_checksum(elf_data);
     crate::arch::serial::write_str("[KRN] user_create: ELF checksum (pre-load)=");
     crate::arch::serial::write_hex(pre_checksum);
@@ -154,13 +155,17 @@ pub fn create_user_process(elf_data: &[u8]) -> Option<usize> {
         rsp: user_rsp,
         ss: (gdt::USER_SS | 3) as u64,
     };
-    let pcb = ProcessDescriptor::new(
+    let mut pcb = ProcessDescriptor::new(
         pid_val,
         ProcessState::Runnable,
         cr3,
         kernel_stack,
         trap_frame,
     );
+    pcb.caps = caps;
+    crate::arch::serial::write_str("[KRN] user_create: caps=");
+    crate::arch::serial::write_hex(caps.bits);
+    crate::arch::serial::write_str("\r\n");
     pid::put_descriptor(idx, pcb);
 
     let entry_page = entry & !(PAGE_SIZE as u64 - 1);
@@ -338,13 +343,19 @@ pub fn exit_current_and_schedule(exit_status: Option<i32>) -> ! {
     }
 }
 
-/// Spawn a process by program id (0=shell, 1=wm, ...). Returns new pid or None on failure.
-pub fn spawn_by_program_id(program_id: u32) -> Option<process::Pid> {
+/// Spawn a process by program id with an explicit capability set.
+///
+/// `cap_mask = 0` means "inherit everything the calling process has".
+/// Any other value is intersected with the calling process's caps so a
+/// process can never grant a child more authority than it has itself.
+pub fn spawn_by_program_id(program_id: u32, cap_mask: u64) -> Option<process::Pid> {
     let elf = crate::kernel::programs::get_elf(program_id)?;
     if elf.len() < 4 || elf[0..4] != [0x7f, b'E', b'L', b'F'] {
         return None;
     }
-    let idx = create_user_process(elf)?;
+    // Compute child caps: intersect parent caps with requested mask.
+    let child_caps = crate::capability::current_caps().child_caps(cap_mask);
+    let idx = create_user_process(elf, child_caps)?;
     pid::get_descriptor(idx).map(|p| p.pid)
 }
 

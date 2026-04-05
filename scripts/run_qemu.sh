@@ -55,7 +55,7 @@ if [ -n "$QEMU_DEBUG_LOG" ]; then
 fi
 
 exec qemu-system-x86_64 \
-  -m 128 \
+  -m 512 \
   -drive "if=pflash,format=raw,readonly=on,file=$OVMF" \
   -drive "file=fat:rw:$BUILD_DIR,format=raw,media=disk" \
   -serial stdio \

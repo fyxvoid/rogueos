@@ -13,7 +13,7 @@ use uefi::prelude::*;
 use uefi::proto::console::gop::GraphicsOutput;
 use uefi::proto::media::fs::SimpleFileSystem;
 use uefi::table::boot::{AllocateType, MemoryDescriptor, MemoryType, ScopedProtocol, SearchType};
-use uefi::table::cfg::{ACPI2_GUID, ACPI_GUID};
+use uefi::table::cfg::{ACPI2_GUID, ACPI_GUID, SMBIOS3_GUID, SMBIOS_GUID};
 use uefi::Identify;
 use uefi::Status;
 
@@ -80,8 +80,9 @@ fn main(handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     log::info!("[BOOT] uefi_entry");
     log::info!("custom_kernel boot: loading kernel...");
 
-    // Capture ACPI RSDP (if present) early while the configuration table is available.
+    // Capture config table entries (ACPI RSDP, SMBIOS) while still in boot services.
     let rsdp_addr = find_rsdp(&system_table);
+    let smbios_addr = find_smbios(&system_table);
 
     let bs = system_table.boot_services();
     let kernel_elf = match load_kernel_file(bs, handle) {
@@ -147,6 +148,9 @@ fn main(handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
         core::ptr::write_volatile(dst, info);
     }
 
+    // Capture EFI Runtime Services table address before ExitBootServices.
+    // The Runtime Services remain callable post-EBS if their memory regions stay mapped.
+    let runtime_services_addr = system_table.runtime_services() as *const _ as u64;
     com1_puts(b"[BOOT] exiting boot services\r\n");
 
     // ExitBootServices performs the required GetMemoryMap + ExitBootServices dance.
@@ -154,7 +158,7 @@ fn main(handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
 
     // After ExitBootServices, we may not call boot services any more.
     // Copy the memory descriptors into the reserved region and finalize BootInfo.
-    finalize_boot_info(mem_map_paddr, mem_map_capacity, &mmap, rsdp_addr);
+    finalize_boot_info(mem_map_paddr, mem_map_capacity, &mmap, rsdp_addr, smbios_addr, runtime_services_addr);
 
     // Direct COM1 write after ExitBootServices (no UEFI services available now)
     com1_puts(b"[BOOT] jumping to kernel\r\n");
@@ -202,6 +206,8 @@ fn init_boot_info(bs: &BootServices) -> uefi::Result<()> {
         rsdp_addr: 0,
         bootloader_version: 0,
         _reserved: 0,
+        smbios_addr: 0,
+        runtime_services_addr: 0,
     };
 
     unsafe {
@@ -346,11 +352,25 @@ fn reserve_memmap_storage(bs: &BootServices) -> Result<(u64, usize), Status> {
 fn find_rsdp(system_table: &SystemTable<Boot>) -> Option<u64> {
     for entry in system_table.config_table() {
         if entry.guid == ACPI2_GUID || entry.guid == ACPI_GUID {
-            // The configuration table stores a physical pointer to the RSDP.
             return Some(entry.address as u64);
         }
     }
     None
+}
+
+/// Scan the UEFI configuration table for the SMBIOS entry point.
+/// Prefers SMBIOS 3.x (64-bit) over SMBIOS 2.x (32-bit). Returns physical address or None.
+fn find_smbios(system_table: &SystemTable<Boot>) -> Option<u64> {
+    let mut smbios2: Option<u64> = None;
+    for entry in system_table.config_table() {
+        if entry.guid == SMBIOS3_GUID {
+            return Some(entry.address as u64); // SMBIOS 3.x preferred
+        }
+        if entry.guid == SMBIOS_GUID {
+            smbios2 = Some(entry.address as u64);
+        }
+    }
+    smbios2
 }
 
 /// Finalize [`BootInfo`] after `ExitBootServices` using the captured memory map and metadata.
@@ -359,6 +379,8 @@ fn finalize_boot_info(
     mem_map_capacity: usize,
     mmap: &uefi::table::boot::MemoryMap<'_>,
     rsdp_addr: Option<u64>,
+    smbios_addr: Option<u64>,
+    runtime_services_addr: u64,
 ) {
     // Copy descriptors into the reserved region as a packed array of MemoryDescriptor.
     let desc_size = core::mem::size_of::<MemoryDescriptor>();
@@ -393,6 +415,8 @@ fn finalize_boot_info(
         info.mem_map_reserved = 0;
         info.rsdp_addr = rsdp_addr.unwrap_or(0);
         info.bootloader_version = bootloader_version;
+        info.smbios_addr = smbios_addr.unwrap_or(0);
+        info.runtime_services_addr = runtime_services_addr;
         core::ptr::write_volatile(dst, info);
     }
 }

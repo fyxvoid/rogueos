@@ -2,6 +2,7 @@
 //! graphics + input. fd 0/1/2 = TTY; fd >= 3 = VFS.
 //! Entry is SYSCALL only (arch::x86_64::msr::init_syscall_msrs).
 
+mod capability;
 mod debug;
 mod gfx;
 mod io;
@@ -26,6 +27,10 @@ use libs::{
     SYS_HW_BP_SET, SYS_HW_BP_CLEAR, SYS_HW_BP_QUERY,
     SYS_PERF_OPEN, SYS_PERF_READ, SYS_PERF_CLOSE,
     SYS_SET_NICE,
+    // Capability + journal
+    SYS_CAP_GRANT, SYS_CAP_REVOKE, SYS_CAP_QUERY,
+    SYS_JOURNAL_WRITE, SYS_JOURNAL_READ,
+    cap,
 };
 
 static mut SYSCALL_HEARTBEAT: u64 = 0;
@@ -68,10 +73,19 @@ pub extern "C" fn syscall_dispatch(
         SYS_UNLINK => user_ptr::result_to_rax(io::sys_unlink(a1 as *const u8, a2 as usize), |v| v as u64, |e| e.0),
         SYS_FSYNC => user_ptr::result_to_rax(io::sys_fsync(a1 as u32), |v| v as u64, |e| e.0),
         SYS_LIST_ROOT => user_ptr::result_to_rax(io::sys_list_root(a1 as *mut u8, a2 as usize), |v| v as u64, |e| e.0),
-        SYS_REBOOT => user_ptr::result_to_rax(misc::sys_reboot(a1 as u32), |v| v as u64, |e| e.0),
+        SYS_REBOOT => {
+            if let Err(e) = crate::capability::require(cap::REBOOT, "reboot") { return e.0 as u64; }
+            user_ptr::result_to_rax(misc::sys_reboot(a1 as u32), |v| v as u64, |e| e.0)
+        }
         SYS_EXIT => process::sys_exit(a1 as i32),
-        SYS_POLL_INPUT => user_ptr::result_to_rax(gfx::sys_poll_input(a1 as *mut KeyEvent), |v| v as u64, |e| e.0),
-        SYS_POLL_MOUSE => user_ptr::result_to_rax(gfx::sys_poll_mouse(a1 as *mut MouseEvent), |v| v as u64, |e| e.0),
+        SYS_POLL_INPUT => {
+            if let Err(e) = crate::capability::require(cap::INPUT, "poll_input") { return e.0 as u64; }
+            user_ptr::result_to_rax(gfx::sys_poll_input(a1 as *mut KeyEvent), |v| v as u64, |e| e.0)
+        }
+        SYS_POLL_MOUSE => {
+            if let Err(e) = crate::capability::require(cap::INPUT, "poll_mouse") { return e.0 as u64; }
+            user_ptr::result_to_rax(gfx::sys_poll_mouse(a1 as *mut MouseEvent), |v| v as u64, |e| e.0)
+        }
         SYS_FB_CLEAR => {
             check_fb_owner();
             user_ptr::result_to_rax(gfx::sys_fb_clear(a1 as u32), |v| v as u64, |e| e.0)
@@ -85,8 +99,12 @@ pub extern "C" fn syscall_dispatch(
             user_ptr::result_to_rax(gfx::sys_fb_flush(), |v| v as u64, |e| e.0)
         }
         SYS_DEBUG_DUMP_PTES => user_ptr::result_to_rax(misc::sys_debug_dump_ptes(a1, a2, a3), |v| v as u64, |e| e.0),
-        SYS_SPAWN => user_ptr::result_to_rax(process::sys_spawn(a1), |v| v as u64, |e| e.0),
-        SYS_GET_PROC_INFO => user_ptr::result_to_rax(process::sys_get_proc_info(a1 as *mut ProcInfo, a2 as u32), |v| v as u64, |e| e.0),
+        // a2 = cap_mask (0 = inherit all parent caps; backwards-compatible)
+        SYS_SPAWN => user_ptr::result_to_rax(process::sys_spawn(a1, a2), |v| v as u64, |e| e.0),
+        SYS_GET_PROC_INFO => {
+            if let Err(e) = crate::capability::require(cap::PROC_INFO, "get_proc_info") { return e.0 as u64; }
+            user_ptr::result_to_rax(process::sys_get_proc_info(a1 as *mut ProcInfo, a2 as u32), |v| v as u64, |e| e.0)
+        }
         SYS_GETPID => user_ptr::result_to_rax(process::sys_getpid(), |v| v as u64, |e| e.0),
         SYS_WAITPID => user_ptr::result_to_rax(
             process::sys_waitpid(a1 as u32, a2 as *mut i32, a3 as u32),
@@ -123,12 +141,14 @@ pub extern "C" fn syscall_dispatch(
             gfx::sys_shm_destroy(a1 as u32), |v| v, |e| e.0),
 
         // ── IPC protocol ─────────────────────────────────────────────────
-        SYS_IPC_SEND => user_ptr::result_to_rax(
-            ipc::sys_ipc_send(a1 as u32, a2 as *const RwmMsg, a3 as u32),
-            |v| v, |e| e.0),
-        SYS_IPC_RECV => user_ptr::result_to_rax(
-            ipc::sys_ipc_recv(a1 as *mut RwmMsg, a2 as u32),
-            |v| v, |e| e.0),
+        SYS_IPC_SEND => {
+            if let Err(e) = crate::capability::require(cap::IPC_SEND, "ipc_send") { return e.0 as u64; }
+            user_ptr::result_to_rax(ipc::sys_ipc_send(a1 as u32, a2 as *const RwmMsg, a3 as u32), |v| v, |e| e.0)
+        }
+        SYS_IPC_RECV => {
+            if let Err(e) = crate::capability::require(cap::IPC_RECV, "ipc_recv") { return e.0 as u64; }
+            user_ptr::result_to_rax(ipc::sys_ipc_recv(a1 as *mut RwmMsg, a2 as u32), |v| v, |e| e.0)
+        }
 
         // ── Hardware breakpoints (pentester/debugger primitives) ──────────
         SYS_HW_BP_SET => user_ptr::result_to_rax(
@@ -161,6 +181,20 @@ pub extern "C" fn syscall_dispatch(
                 0
             }
         }
+
+        // ── Capability management ─────────────────────────────────────────
+        SYS_CAP_GRANT  => user_ptr::result_to_rax(
+            capability::sys_cap_grant(a1, a2), |v| v, |e| e.0),
+        SYS_CAP_REVOKE => user_ptr::result_to_rax(
+            capability::sys_cap_revoke(a1, a2), |v| v, |e| e.0),
+        SYS_CAP_QUERY  => user_ptr::result_to_rax(
+            capability::sys_cap_query(), |v| v, |e| e.0),
+
+        // ── Cogman restart journal ────────────────────────────────────────
+        SYS_JOURNAL_WRITE => user_ptr::result_to_rax(
+            capability::sys_journal_write(a1, a2), |v| v, |e| e.0),
+        SYS_JOURNAL_READ  => user_ptr::result_to_rax(
+            capability::sys_journal_read(a1, a2), |v| v, |e| e.0),
 
         _ => SysErr::INVAL.0 as u64,
     }

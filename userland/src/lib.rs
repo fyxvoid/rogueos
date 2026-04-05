@@ -19,6 +19,8 @@ use libs::{
     SYS_SURFACE_ATTACH, SYS_SURFACE_COMMIT, SYS_SURFACE_CREATE, SYS_SURFACE_DESTROY,
     SYS_SURFACE_SET_Z, SYS_SHM_CREATE, SYS_SHM_DESTROY,
     SYS_UNLINK, SYS_WAITPID, SYS_WRITE,
+    SYS_CAP_GRANT, SYS_CAP_REVOKE, SYS_CAP_QUERY,
+    SYS_JOURNAL_WRITE, SYS_JOURNAL_READ,
 };
 
 #[cfg(not(test))]
@@ -235,13 +237,99 @@ pub fn sys_fsync(fd: u32) -> isize {
 
 /// Spawn process by program_id (0=shell, 1=wm, 2=editor, ...). Returns pid or negative errno.
 #[inline(always)]
+/// Spawn a process with full inheritance of caller's capabilities (backwards-compat).
 pub fn sys_spawn(program_id: u32) -> isize {
+    sys_spawn_capped(program_id, 0) // 0 = inherit all parent caps
+}
+
+/// Spawn a process and restrict its capabilities to `cap_mask & parent_caps`.
+/// Use `libs::cap::*` constants to build the mask.
+pub fn sys_spawn_capped(program_id: u32, cap_mask: u64) -> isize {
     let ret: isize;
     unsafe {
         core::arch::asm!(
             "syscall",
             in("rax") SYS_SPAWN,
             in("rdi") program_id as u64,
+            in("rsi") cap_mask,
+            lateout("rax") ret,
+            options(nostack, preserves_flags)
+        );
+    }
+    ret
+}
+
+/// Grant capability bits to a process. Requires CAP_GRANT.
+pub fn sys_cap_grant(target_pid: u32, cap_bits: u64) -> isize {
+    let ret: isize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_CAP_GRANT,
+            in("rdi") target_pid as u64,
+            in("rsi") cap_bits,
+            lateout("rax") ret,
+            options(nostack, preserves_flags)
+        );
+    }
+    ret
+}
+
+/// Revoke capability bits from a process. Requires CAP_GRANT.
+pub fn sys_cap_revoke(target_pid: u32, cap_bits: u64) -> isize {
+    let ret: isize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_CAP_REVOKE,
+            in("rdi") target_pid as u64,
+            in("rsi") cap_bits,
+            lateout("rax") ret,
+            options(nostack, preserves_flags)
+        );
+    }
+    ret
+}
+
+/// Query own capability bitmask. Returns the bitmask (cast to isize; treat as u64).
+pub fn sys_cap_query() -> u64 {
+    let ret: u64;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_CAP_QUERY,
+            lateout("rax") ret,
+            options(nostack, preserves_flags)
+        );
+    }
+    ret
+}
+
+/// Write bytes to the Cogman restart journal. Requires CAP_JOURNAL.
+pub fn sys_journal_write(data: &[u8]) -> isize {
+    let ret: isize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_JOURNAL_WRITE,
+            in("rdi") data.as_ptr() as u64,
+            in("rsi") data.len() as u64,
+            lateout("rax") ret,
+            options(nostack, preserves_flags)
+        );
+    }
+    ret
+}
+
+/// Read the Cogman restart journal into `buf`. Returns bytes read. Requires CAP_JOURNAL.
+pub fn sys_journal_read(buf: &mut [u8]) -> isize {
+    let ret: isize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") SYS_JOURNAL_READ,
+            in("rdi") buf.as_mut_ptr() as u64,
+            in("rsi") buf.len() as u64,
             lateout("rax") ret,
             options(nostack, preserves_flags)
         );
@@ -563,6 +651,23 @@ pub fn sys_get_compositor_pid() -> isize {
         core::arch::asm!(
             "syscall",
             in("rax") SYS_GET_COMPOSITOR_PID,
+            lateout("rax") ret,
+            options(nostack, preserves_flags)
+        );
+    }
+    ret
+}
+
+/// Poll the mouse for relative movement and button state.
+/// Returns 0 (always non-blocking; zeroes `ev` if no new data).
+#[inline(always)]
+pub fn sys_poll_mouse(ev: &mut libs::MouseEvent) -> isize {
+    let ret: isize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") libs::SYS_POLL_MOUSE,
+            in("rdi") ev as *mut libs::MouseEvent as u64,
             lateout("rax") ret,
             options(nostack, preserves_flags)
         );

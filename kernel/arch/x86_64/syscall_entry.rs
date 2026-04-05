@@ -103,6 +103,7 @@ pub unsafe extern "C" fn syscall_entry() {
         pop r9
         pop r11
         pop rcx
+        mov rsp, [{user_rsp}]
         sysretq
         "#,
         user_rsp = sym __syscall_user_rsp,

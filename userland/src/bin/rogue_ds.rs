@@ -205,13 +205,14 @@ impl Ds {
     // ── Client management ────────────────────────────────────────────────────
 
     fn add_client(&mut self, pid: u32, surface_id: u32, title: &[u8]) -> Option<usize> {
+        let tags = self.cur_tags();
         for i in 0..MAX_CLIENTS {
             if !self.clients[i].alive {
                 let c = &mut self.clients[i];
                 c.alive      = true;
                 c.pid        = pid;
                 c.surface_id = surface_id;
-                c.tags       = self.cur_tags();
+                c.tags       = tags;
                 c.dirty      = false;
                 let n = title.len().min(20);
                 c.title[..n].copy_from_slice(&title[..n]);
@@ -796,7 +797,7 @@ fn _start() -> ! {
         if n > 0 {
             let pressed = ev.pressed;
             let kc = ev.keycode;
-            if kc == KEY_LSUPER || kc == KEY_RSUPER {
+            if kc == KEY_MOD {
                 ds.mod_pressed = pressed;
             } else if ds.mod_pressed {
                 if !ds.handle_shortcut(kc, pressed) {
