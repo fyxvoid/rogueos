@@ -45,7 +45,7 @@ mcopy -i "$EFI_IMG" "$BUILD_DIR/EFI/BOOT/BOOTX64.EFI" ::EFI/BOOT/BOOTX64.EFI
 
 # Build ISO with El Torito UEFI boot, using the FAT image as the EFI System Partition.
 echo "Building ISO $ISO_OUT..."
-xorriso -as mkisofs -o "$ISO_OUT" -r -V "KINGDOM_OS" \
+xorriso -as mkisofs -o "$ISO_OUT" -r -V "ROGUEOS" \
   -append_partition 2 0xef "$EFI_IMG" \
   -appended_part_as_gpt \
   -e --interval:appended_partition_2:all:: \

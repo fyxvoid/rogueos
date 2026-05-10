@@ -1,4 +1,4 @@
-# Kingdom OS C SDK — Makefile
+# RogueOS C SDK — Makefile
 #
 # Targets:
 #   make               — build bare-metal libk.a + crt0.o (needs x86_64-elf-gcc)
@@ -13,7 +13,7 @@ AR_BARE   ?= x86_64-elf-ar
 BARE_CFLAGS  = -std=c11 -ffreestanding -nostdlib -nostdinc \
                -I include -O2 -Wall -Wextra \
                -mno-red-zone -mno-mmx -mno-sse -mno-sse2
-LINUX_CFLAGS = -std=c11 -DKINGDOM_LINUX -I include -O2 -Wall -Wextra
+LINUX_CFLAGS = -std=c11 -DROGUEOS_LINUX -I include -O2 -Wall -Wextra
 
 BUILD_BARE  = build/bare
 BUILD_LINUX = build/linux

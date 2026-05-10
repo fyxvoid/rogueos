@@ -1,4 +1,4 @@
-/* kwm.h — KWM IPC protocol for C/C++ Kingdom OS apps.
+/* kwm.h — KWM IPC protocol for C/C++ RogueOS apps.
  *
  * KwmMsg is a 64-byte fixed-size message compatible with the Rust KwmMsg struct
  * in libs/src/lib.rs.  Layout is guaranteed by _Static_assert.
@@ -13,7 +13,7 @@
 #ifndef KWM_H
 #define KWM_H
 
-#include "kingdom.h"
+#include "rogueos.h"
 
 #ifdef __cplusplus
 extern "C" {

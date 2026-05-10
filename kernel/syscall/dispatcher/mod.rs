@@ -2,10 +2,13 @@
 //! graphics + input. fd 0/1/2 = TTY; fd >= 3 = VFS.
 //! Entry is SYSCALL only (arch::x86_64::msr::init_syscall_msrs).
 
+mod capability;
 mod debug;
-mod gfx;
+pub(crate) mod gfx;
 mod io;
+mod iflow;
 mod ipc;
+pub(crate) mod mmap;
 mod misc;
 mod perf;
 mod process;
@@ -20,13 +23,29 @@ use libs::{
     SYS_READ, SYS_REBOOT, SYS_SCREEN_SIZE, SYS_SPAWN,
     SYS_CLAIM_COMPOSITOR, SYS_COMPOSITE_ALL, SYS_GET_COMPOSITOR_PID,
     SYS_SURFACE_ATTACH, SYS_SURFACE_COMMIT, SYS_SURFACE_CREATE, SYS_SURFACE_DESTROY,
-    SYS_SURFACE_SET_Z, SYS_SHM_CREATE, SYS_SHM_DESTROY,
+    SYS_SURFACE_SET_Z, SYS_SHM_CREATE, SYS_SHM_DESTROY, SYS_MAP_FRAMEBUFFER,
     SYS_UNLINK, SYS_WAITPID, SYS_WRITE,
     // Debug / perf / scheduler
     SYS_HW_BP_SET, SYS_HW_BP_CLEAR, SYS_HW_BP_QUERY,
     SYS_PERF_OPEN, SYS_PERF_READ, SYS_PERF_CLOSE,
     SYS_SET_NICE,
+    // Time
+    SYS_GETTIME,
+    // Capability + journal
+    SYS_CAP_GRANT, SYS_CAP_REVOKE, SYS_CAP_QUERY,
+    SYS_JOURNAL_WRITE, SYS_JOURNAL_READ,
+    // MMAP
+    SYS_MMAP, SYS_MUNMAP,
+    // Information flow control
+    SYS_IFLOW_GET, SYS_IFLOW_TAINT, SYS_IFLOW_DECLASSIFY, SYS_IFLOW_ENDORSE,
+    cap,
 };
+
+/// Called from the process exit path for any dying process.
+/// Releases compositor authority and backbuffer if held by that process.
+pub fn on_process_exit(pid: u32) {
+    gfx::on_compositor_exit(pid);
+}
 
 static mut SYSCALL_HEARTBEAT: u64 = 0;
 
@@ -68,25 +87,44 @@ pub extern "C" fn syscall_dispatch(
         SYS_UNLINK => user_ptr::result_to_rax(io::sys_unlink(a1 as *const u8, a2 as usize), |v| v as u64, |e| e.0),
         SYS_FSYNC => user_ptr::result_to_rax(io::sys_fsync(a1 as u32), |v| v as u64, |e| e.0),
         SYS_LIST_ROOT => user_ptr::result_to_rax(io::sys_list_root(a1 as *mut u8, a2 as usize), |v| v as u64, |e| e.0),
-        SYS_REBOOT => user_ptr::result_to_rax(misc::sys_reboot(a1 as u32), |v| v as u64, |e| e.0),
+        SYS_REBOOT => {
+            if let Err(e) = crate::capability::require(cap::REBOOT, "reboot") { return e.0 as u64; }
+            user_ptr::result_to_rax(misc::sys_reboot(a1 as u32), |v| v as u64, |e| e.0)
+        }
         SYS_EXIT => process::sys_exit(a1 as i32),
-        SYS_POLL_INPUT => user_ptr::result_to_rax(gfx::sys_poll_input(a1 as *mut KeyEvent), |v| v as u64, |e| e.0),
-        SYS_POLL_MOUSE => user_ptr::result_to_rax(gfx::sys_poll_mouse(a1 as *mut MouseEvent), |v| v as u64, |e| e.0),
+        SYS_POLL_INPUT => {
+            if let Err(e) = crate::capability::require(cap::INPUT, "poll_input") { return e.0 as u64; }
+            user_ptr::result_to_rax(gfx::sys_poll_input(a1 as *mut KeyEvent), |v| v as u64, |e| e.0)
+        }
+        SYS_POLL_MOUSE => {
+            if let Err(e) = crate::capability::require(cap::INPUT, "poll_mouse") { return e.0 as u64; }
+            user_ptr::result_to_rax(gfx::sys_poll_mouse(a1 as *mut MouseEvent), |v| v as u64, |e| e.0)
+        }
         SYS_FB_CLEAR => {
+            if let Err(e) = crate::capability::require(cap::DISPLAY, "fb_clear") { return e.0 as u64; }
             check_fb_owner();
             user_ptr::result_to_rax(gfx::sys_fb_clear(a1 as u32), |v| v as u64, |e| e.0)
         }
         SYS_FB_FILL_RECT => {
+            if let Err(e) = crate::capability::require(cap::DISPLAY, "fb_fill_rect") { return e.0 as u64; }
             check_fb_owner();
             user_ptr::result_to_rax(gfx::sys_fb_fill_rect(a1 as u32, a2 as u32, a3 as u32, a4 as u32, a5 as u32), |v| v as u64, |e| e.0)
         }
         SYS_FB_FLUSH => {
+            if let Err(e) = crate::capability::require(cap::DISPLAY, "fb_flush") { return e.0 as u64; }
             check_fb_owner();
             user_ptr::result_to_rax(gfx::sys_fb_flush(), |v| v as u64, |e| e.0)
         }
-        SYS_DEBUG_DUMP_PTES => user_ptr::result_to_rax(misc::sys_debug_dump_ptes(a1, a2, a3), |v| v as u64, |e| e.0),
-        SYS_SPAWN => user_ptr::result_to_rax(process::sys_spawn(a1), |v| v as u64, |e| e.0),
-        SYS_GET_PROC_INFO => user_ptr::result_to_rax(process::sys_get_proc_info(a1 as *mut ProcInfo, a2 as u32), |v| v as u64, |e| e.0),
+        SYS_DEBUG_DUMP_PTES => {
+            if let Err(e) = crate::capability::require(cap::PROC_INFO, "debug_dump_ptes") { return e.0 as u64; }
+            user_ptr::result_to_rax(misc::sys_debug_dump_ptes(a1, a2, a3), |v| v as u64, |e| e.0)
+        }
+        // a2 = cap_mask (0 = inherit all parent caps; backwards-compatible)
+        SYS_SPAWN => user_ptr::result_to_rax(process::sys_spawn(a1, a2), |v| v as u64, |e| e.0),
+        SYS_GET_PROC_INFO => {
+            if let Err(e) = crate::capability::require(cap::PROC_INFO, "get_proc_info") { return e.0 as u64; }
+            user_ptr::result_to_rax(process::sys_get_proc_info(a1 as *mut ProcInfo, a2 as u32), |v| v as u64, |e| e.0)
+        }
         SYS_GETPID => user_ptr::result_to_rax(process::sys_getpid(), |v| v as u64, |e| e.0),
         SYS_WAITPID => user_ptr::result_to_rax(
             process::sys_waitpid(a1 as u32, a2 as *mut i32, a3 as u32),
@@ -94,41 +132,75 @@ pub extern "C" fn syscall_dispatch(
             |e| e.0,
         ),
         // ── Surface protocol ─────────────────────────────────────────────
-        SYS_SURFACE_CREATE => user_ptr::result_to_rax(
-            gfx::sys_surface_create(), |v| v, |e| e.0),
-        SYS_SURFACE_DESTROY => user_ptr::result_to_rax(
-            gfx::sys_surface_destroy(a1 as u32), |v| v, |e| e.0),
-        SYS_SURFACE_ATTACH => user_ptr::result_to_rax(
-            gfx::sys_surface_attach(a1 as u32, a2 as *const u8, a3 as u32, a4 as u32, a5 as u32),
-            |v| v, |e| e.0),
-        SYS_SURFACE_COMMIT => user_ptr::result_to_rax(
-            gfx::sys_surface_commit(a1 as u32, a2 as u32, a3 as u32), |v| v, |e| e.0),
+        SYS_SURFACE_CREATE => {
+            if let Err(e) = crate::capability::require(cap::DISPLAY, "surface_create") { return e.0 as u64; }
+            user_ptr::result_to_rax(gfx::sys_surface_create(), |v| v, |e| e.0)
+        }
+        SYS_SURFACE_DESTROY => {
+            if let Err(e) = crate::capability::require(cap::DISPLAY, "surface_destroy") { return e.0 as u64; }
+            user_ptr::result_to_rax(gfx::sys_surface_destroy(a1 as u32), |v| v, |e| e.0)
+        }
+        SYS_SURFACE_ATTACH => {
+            if let Err(e) = crate::capability::require(cap::DISPLAY, "surface_attach") { return e.0 as u64; }
+            user_ptr::result_to_rax(
+                gfx::sys_surface_attach(a1 as u32, a2 as *const u8, a3 as u32, a4 as u32, a5 as u32),
+                |v| v, |e| e.0)
+        }
+        SYS_SURFACE_COMMIT => {
+            if let Err(e) = crate::capability::require(cap::DISPLAY, "surface_commit") { return e.0 as u64; }
+            user_ptr::result_to_rax(gfx::sys_surface_commit(a1 as u32, a2 as u32, a3 as u32), |v| v, |e| e.0)
+        }
         SYS_SCREEN_SIZE => user_ptr::result_to_rax(
             gfx::sys_screen_size(a1 as *mut u32, a2 as *mut u32), |v| v, |e| e.0),
-        SYS_FB_BLIT => user_ptr::result_to_rax(
-            gfx::sys_fb_blit(a1 as u32, a2 as u32, a3 as u32, a4 as u32, a5 as u32, _a6 as *const u8),
-            |v| v, |e| e.0),
+        SYS_FB_BLIT => {
+            if let Err(e) = crate::capability::require(cap::DISPLAY, "fb_blit") { return e.0 as u64; }
+            user_ptr::result_to_rax(
+                gfx::sys_fb_blit(a1 as u32, a2 as u32, a3 as u32, a4 as u32, a5 as u32, _a6 as *const u8),
+                |v| v, |e| e.0)
+        }
         // ── RDP compositor control ────────────────────────────────────────
-        SYS_CLAIM_COMPOSITOR => user_ptr::result_to_rax(
-            gfx::sys_claim_compositor(), |v| v, |e| e.0),
-        SYS_COMPOSITE_ALL => user_ptr::result_to_rax(
-            gfx::sys_composite_all(), |v| v, |e| e.0),
+        SYS_CLAIM_COMPOSITOR => {
+            if let Err(e) = crate::capability::require(cap::COMPOSITOR, "claim_compositor") { return e.0 as u64; }
+            user_ptr::result_to_rax(gfx::sys_claim_compositor(), |v| v, |e| e.0)
+        }
+        SYS_COMPOSITE_ALL => {
+            if let Err(e) = crate::capability::require(cap::COMPOSITOR, "composite_all") { return e.0 as u64; }
+            user_ptr::result_to_rax(gfx::sys_composite_all(), |v| v, |e| e.0)
+        }
         SYS_GET_COMPOSITOR_PID => user_ptr::result_to_rax(
             gfx::sys_get_compositor_pid(), |v| v, |e| e.0),
-        SYS_SURFACE_SET_Z => user_ptr::result_to_rax(
-            gfx::sys_surface_set_z(a1 as u32, a2 as u8), |v| v, |e| e.0),
-        SYS_SHM_CREATE => user_ptr::result_to_rax(
-            gfx::sys_shm_create(a1), |v| v, |e| e.0),
-        SYS_SHM_DESTROY => user_ptr::result_to_rax(
-            gfx::sys_shm_destroy(a1 as u32), |v| v, |e| e.0),
+        SYS_SURFACE_SET_Z => {
+            if let Err(e) = crate::capability::require(cap::DISPLAY, "surface_set_z") { return e.0 as u64; }
+            user_ptr::result_to_rax(gfx::sys_surface_set_z(a1 as u32, a2 as u8), |v| v, |e| e.0)
+        }
+        SYS_SHM_CREATE => {
+            if let Err(e) = crate::capability::require(cap::SHM, "shm_create") { return e.0 as u64; }
+            user_ptr::result_to_rax(gfx::sys_shm_create(a1), |v| v, |e| e.0)
+        }
+        SYS_SHM_DESTROY => {
+            if let Err(e) = crate::capability::require(cap::SHM, "shm_destroy") { return e.0 as u64; }
+            user_ptr::result_to_rax(gfx::sys_shm_destroy(a1 as u32), |v| v, |e| e.0)
+        }
+        SYS_MAP_FRAMEBUFFER => user_ptr::result_to_rax(
+            gfx::sys_map_framebuffer(a1 as *mut u64, a2 as *mut u32, a3 as *mut u32, a4 as *mut u32),
+            |v| v, |e| e.0),
 
         // ── IPC protocol ─────────────────────────────────────────────────
-        SYS_IPC_SEND => user_ptr::result_to_rax(
-            ipc::sys_ipc_send(a1 as u32, a2 as *const RwmMsg, a3 as u32),
-            |v| v, |e| e.0),
-        SYS_IPC_RECV => user_ptr::result_to_rax(
-            ipc::sys_ipc_recv(a1 as *mut RwmMsg, a2 as u32),
-            |v| v, |e| e.0),
+        SYS_IPC_SEND => {
+            if let Err(e) = crate::capability::require(cap::IPC_SEND, "ipc_send") { return e.0 as u64; }
+            // IFC enforcement: sender's label must be able to flow to receiver's label.
+            let target_pid = a1 as u32;
+            if let Some(dst_idx) = crate::process::index_of_pid(target_pid) {
+                if let Some(dst_label) = crate::iflow::label_of_index(dst_idx) {
+                    if let Err(e) = crate::iflow::check_flow_to(dst_label, "ipc_send") { return e.0 as u64; }
+                }
+            }
+            user_ptr::result_to_rax(ipc::sys_ipc_send(target_pid, a2 as *const RwmMsg, a3 as u32), |v| v, |e| e.0)
+        }
+        SYS_IPC_RECV => {
+            if let Err(e) = crate::capability::require(cap::IPC_RECV, "ipc_recv") { return e.0 as u64; }
+            user_ptr::result_to_rax(ipc::sys_ipc_recv(a1 as *mut RwmMsg, a2 as u32), |v| v, |e| e.0)
+        }
 
         // ── Hardware breakpoints (pentester/debugger primitives) ──────────
         SYS_HW_BP_SET => user_ptr::result_to_rax(
@@ -146,6 +218,10 @@ pub extern "C" fn syscall_dispatch(
         SYS_PERF_CLOSE => user_ptr::result_to_rax(
             perf::sys_perf_close(a1), |v| v, |e| e.0),
 
+        // ── Real-time clock ───────────────────────────────────────────────
+        SYS_GETTIME => user_ptr::result_to_rax(
+            misc::sys_gettime(a1 as *mut u64), |v| v, |e| e.0),
+
         // ── Scheduler control ─────────────────────────────────────────────
         SYS_SET_NICE => {
             let nice = a1 as i64;
@@ -161,6 +237,34 @@ pub extern "C" fn syscall_dispatch(
                 0
             }
         }
+
+        // ── Capability management ─────────────────────────────────────────
+        SYS_CAP_GRANT  => user_ptr::result_to_rax(
+            capability::sys_cap_grant(a1, a2), |v| v, |e| e.0),
+        SYS_CAP_REVOKE => user_ptr::result_to_rax(
+            capability::sys_cap_revoke(a1, a2), |v| v, |e| e.0),
+        SYS_CAP_QUERY  => user_ptr::result_to_rax(
+            capability::sys_cap_query(), |v| v, |e| e.0),
+
+        // ── Cogman restart journal ────────────────────────────────────────
+        SYS_JOURNAL_WRITE => user_ptr::result_to_rax(
+            capability::sys_journal_write(a1, a2), |v| v, |e| e.0),
+        SYS_JOURNAL_READ  => user_ptr::result_to_rax(
+            capability::sys_journal_read(a1, a2), |v| v, |e| e.0),
+
+        // ── Anonymous memory mapping ──────────────────────────────────────
+        SYS_MMAP   => user_ptr::result_to_rax(mmap::sys_mmap(a1, a2), |v| v, |e| e.0),
+        SYS_MUNMAP => user_ptr::result_to_rax(mmap::sys_munmap(a1, a2), |v| v, |e| e.0),
+
+        // ── Information flow control ──────────────────────────────────────
+        SYS_IFLOW_GET => user_ptr::result_to_rax(
+            iflow::sys_iflow_get(a1 as u32, a2 as *mut u64, a3 as *mut u64), |v| v, |e| e.0),
+        SYS_IFLOW_TAINT => user_ptr::result_to_rax(
+            iflow::sys_iflow_taint(a1, a2), |v| v, |e| e.0),
+        SYS_IFLOW_DECLASSIFY => user_ptr::result_to_rax(
+            iflow::sys_iflow_declassify(a1), |v| v, |e| e.0),
+        SYS_IFLOW_ENDORSE => user_ptr::result_to_rax(
+            iflow::sys_iflow_endorse(a1 as u32, a2), |v| v, |e| e.0),
 
         _ => SysErr::INVAL.0 as u64,
     }

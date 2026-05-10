@@ -142,20 +142,25 @@ pub fn load_elf(elf_data: &[u8], cr3: u64) -> Option<LoadResult> {
             } else {
                 0
             };
-            let page_bytes_left = (PAGE_SIZE as u64).min(end_va - va) as usize;
-            let copy_len = core::cmp::min(page_bytes_left, file_bytes_left);
-            let dest_offset = (p_vaddr - va) as usize;
+            // dest_offset: byte offset within the physical frame where this segment's data starts.
+            // For the first page the segment may start mid-page; subsequent pages always start at 0.
+            let dest_offset = p_vaddr.saturating_sub(va) as usize;
+            // copy_len must not overflow the physical frame: cap at (PAGE_SIZE - dest_offset).
+            let space_in_page = PAGE_SIZE.saturating_sub(dest_offset);
+            let copy_len = core::cmp::min(space_in_page, file_bytes_left);
 
-            // Backing page must be a physical frame (for PTE); PT_POOL is for table pages only. Use buddy allocator.
-            let (pa, _need_map, _existing_pte) = match paging::walk_pte(cr3, va) {
-                Some(pte) => (pte & FRAME_MASK, false, Some(pte)),
-                None => {
-                    let Some(pa) = physical::alloc_frame() else {
-                        serial::write_str("[KRN] load_elf: alloc_frame_failed\r\n");
-                        return None;
-                    };
-                    (pa, true, None)
-                }
+            // Check whether this page is already mapped (overlapping PT_LOAD segments —
+            // common when .text and .rodata share a page). Reuse the existing frame rather
+            // than allocating a new one, so prior segment data is preserved.
+            let existing_pte = paging::walk_pte(cr3, va);
+            let (pa, fresh_frame) = if let Some(pte) = existing_pte {
+                (pte & FRAME_MASK, false)
+            } else {
+                let Some(p) = physical::alloc_frame() else {
+                    serial::write_str("[KRN] load_elf: alloc_frame_failed\r\n");
+                    return None;
+                };
+                (p, true)
             };
 
             if copy_len > 0 {
@@ -167,31 +172,30 @@ pub fn load_elf(elf_data: &[u8], cr3: u64) -> Option<LoadResult> {
                     );
                 }
             }
-            if dest_offset + copy_len < PAGE_SIZE {
+            // Zero bytes after the segment data only for freshly-allocated frames.
+            // Overlapping pages already have prior-segment data that must be kept.
+            if fresh_frame && dest_offset + copy_len < PAGE_SIZE {
                 let zero_start = dest_offset + copy_len;
-                let zero_len = PAGE_SIZE - zero_start;
                 unsafe {
-                    core::ptr::write_bytes((pa as *mut u8).add(zero_start), 0, zero_len);
+                    core::ptr::write_bytes((pa as *mut u8).add(zero_start), 0, PAGE_SIZE - zero_start);
                 }
             }
 
-            // Always use the ELF segment flags directly. Do not OR with existing PTE
-            // flags: the kernel identity map at the same VA has Writable=1, and ORing
-            // would make user text segments writable, failing the post-load check.
-            let map_flags = flags;
-            if !virt::map_page_in_space(cr3, va, pa, map_flags) {
+            if fresh_frame && !virt::map_page_in_space(cr3, va, pa, flags) {
                 serial::write_str("[KRN] load_elf: map_page_in_space_failed\r\n");
                 return None;
             }
-            // Validate first 16 bytes of executable segment at mapped VA vs file.
+            // Validate first 16 bytes of executable segment via physical address
+            // (identity-mapped, safe in any CR3 context — the VA is only in the
+            // process CR3 and must NOT be dereferenced here).
             if executable && va == (p_vaddr & !(PAGE_SIZE as u64 - 1)) && p_filesz >= 16
                 && elf_data.len() >= p_offset + 16
             {
-                let mapped_ptr = p_vaddr as *const u8;
+                let phys_ptr = unsafe { (pa as *mut u8).add(dest_offset) };
                 let mut match_ok = true;
                 for i in 0..16 {
                     let file_byte = elf_data[p_offset + i];
-                    let mem_byte = unsafe { *mapped_ptr.add(i) };
+                    let mem_byte = unsafe { *phys_ptr.add(i) };
                     if file_byte != mem_byte {
                         serial::write_str("[KRN] load_elf: text copy mismatch at offset ");
                         serial::write_hex(i as u64);
@@ -217,19 +221,26 @@ pub fn load_elf(elf_data: &[u8], cr3: u64) -> Option<LoadResult> {
         crate::kernel::diagnostic::diagnostic_halt("user_entry_outside_load_segment");
     }
 
-    // Assert first BSS region reads zero before first user instruction.
+    // Assert first BSS region is zero using the physical address (identity-mapped).
+    // The BSS VA is in the process CR3, so we walk the PT to get the PA.
     if let Some(bss_va) = first_bss_check_va {
-        let ptr = bss_va as *const u64;
-        let val = unsafe { core::ptr::read_volatile(ptr) };
-        if val != 0 {
-            serial::write_str("[KRN] load_elf: BSS check failed at va=");
-            serial::write_hex(bss_va);
-            serial::write_str(" val=");
-            serial::write_hex(val);
-            serial::write_str("\r\n");
-            crate::kernel::diagnostic::diagnostic_halt("bss_not_zero");
+        if let Some(bss_pa) = paging::walk_pte(cr3, bss_va) {
+            let bss_pa = bss_pa & !0xFFF; // mask off flags
+            let byte_off = (bss_va & 0xFFF) as usize;
+            let ptr = (bss_pa as *const u64).wrapping_add(byte_off / 8);
+            let val = unsafe { core::ptr::read_volatile(ptr) };
+            if val != 0 {
+                serial::write_str("[KRN] load_elf: BSS check failed at va=");
+                serial::write_hex(bss_va);
+                serial::write_str(" pa=");
+                serial::write_hex(bss_pa);
+                serial::write_str(" val=");
+                serial::write_hex(val);
+                serial::write_str("\r\n");
+                crate::kernel::diagnostic::diagnostic_halt("bss_not_zero");
+            }
+            serial::write_str("[KRN] load_elf: BSS check ok (8 bytes zero at first BSS)\r\n");
         }
-        serial::write_str("[KRN] load_elf: BSS check ok (8 bytes zero at first BSS)\r\n");
     }
 
     serial::write_str("[KRN] load_elf: done\r\n");
@@ -251,7 +262,7 @@ mod tests {
         buf[4] = 2; // 64-bit
         buf[0x10..0x12].copy_from_slice(&2u16.to_le_bytes()); // e_type ET_EXEC
         buf[0x12..0x14].copy_from_slice(&0x3eu16.to_le_bytes()); // e_machine EM_X86_64
-        buf[0x18..0x20].copy_from_slice(&0x400_000u64.to_le_bytes()); // e_entry
+        buf[0x18..0x20].copy_from_slice(&0xA00_000u64.to_le_bytes()); // e_entry
         buf[0x20..0x28].copy_from_slice(&0x40u64.to_le_bytes()); // e_phoff
         buf[0x36..0x38].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
         buf[0x38..0x3a].copy_from_slice(&0u16.to_le_bytes()); // e_phnum = 0 (no PT_LOAD)

@@ -202,6 +202,8 @@ fn init_boot_info(bs: &BootServices) -> uefi::Result<()> {
         rsdp_addr: 0,
         bootloader_version: 0,
         _reserved: 0,
+        smbios_addr: 0,
+        runtime_services_addr: 0,
     };
 
     unsafe {

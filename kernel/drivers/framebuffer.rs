@@ -81,6 +81,11 @@ fn info() -> Option<&'static FrameBufferInfo> {
     unsafe { FB_INFO.as_ref() }
 }
 
+/// Returns (width, height, stride_bytes) of the active framebuffer, or None if not initialised.
+pub fn dimensions() -> Option<(u32, u32, u32)> {
+    info().map(|i| (i.width, i.height, i.stride * 4))
+}
+
 /// Dump framebuffer state to serial (for diagnostic_halt / Section 11).
 pub fn dump_state_serial() {
     if let Some(info) = info() {
@@ -156,13 +161,13 @@ pub fn fill_rect(x: u32, y: u32, w: u32, h: u32, color: u32) {
     let stride = info.stride as usize;
     unsafe {
         let buf = info.base_virt as *mut u32;
-        for row in 0..h0 {
-            let y = (y0 + row) as usize;
-            let mut ptr_row = buf.add(y * stride + x0 as usize);
-            for _ in 0..w0 {
-                ptr::write_volatile(ptr_row, color);
-                ptr_row = ptr_row.add(1);
-            }
+        // Build one filled row in a stack buffer, then memcpy each row.
+        let mut row_buf = [0u32; 1920];
+        let rw = w0 as usize;
+        for p in row_buf[..rw].iter_mut() { *p = color; }
+        for row in 0..h0 as usize {
+            let dst_row = buf.add((y0 as usize + row) * stride + x0 as usize);
+            ptr::copy_nonoverlapping(row_buf.as_ptr(), dst_row, rw);
         }
     }
 }
@@ -189,24 +194,80 @@ pub fn blit(dst_x: u32, dst_y: u32, w: u32, h: u32, src_stride: u32, src_ptr: *c
         let dst = info.base_virt as *mut u32;
         let src = src_ptr as *const u32;
         let src_stride_u32 = (src_stride as usize) / 4;
-        for row in 0..h {
-            let dy = (dst_y + row) as usize;
-            let sy = (row as usize) * src_stride_u32;
-            for col in 0..w {
-                let dx = (dst_x + col) as usize;
-                let sx = sy + col as usize;
-                let px = ptr::read_volatile(src.add(sx));
-                ptr::write_volatile(dst.add(dy * dst_stride + dx), px);
+        for row in 0..h as usize {
+            let src_row = src.add(row * src_stride_u32);
+            let dst_row = dst.add((dst_y as usize + row) * dst_stride + dst_x as usize);
+            ptr::copy_nonoverlapping(src_row, dst_row, w as usize);
+        }
+    }
+}
+
+/// Fast RAM-to-RAM pixel blit. Uses `copy_nonoverlapping` per row so the
+/// compiler can vectorize (SSE/AVX). Do NOT use for MMIO destinations —
+/// use `blit()` there which uses `write_volatile` to prevent elision.
+///
+/// Clips to `(dst_w, dst_h)` bounds. `dst_stride` and `src_stride` are in bytes.
+pub fn blit_ram(
+    dst: *mut u8,
+    dst_x: u32,
+    dst_y: u32,
+    dst_stride: u32,
+    dst_w: u32,
+    dst_h: u32,
+    src: *const u8,
+    src_stride: u32,
+    w: u32,
+    h: u32,
+) {
+    if dst.is_null() || src.is_null() || w == 0 || h == 0 { return; }
+    if dst_x >= dst_w || dst_y >= dst_h { return; }
+    let w = w.min(dst_w - dst_x);
+    let h = h.min(dst_h - dst_y);
+    let row_bytes = w as usize * 4; // 32bpp
+    unsafe {
+        for row in 0..h as usize {
+            let dst_row = dst.add(
+                (dst_y as usize + row) * dst_stride as usize + dst_x as usize * 4,
+            );
+            let src_row = src.add(row * src_stride as usize);
+            core::ptr::copy_nonoverlapping(src_row, dst_row, row_bytes);
+        }
+    }
+}
+
+/// Fill a rectangle in a RAM buffer with a solid 32bpp color.
+/// Uses plain (non-volatile) stores so the compiler can emit SIMD fills.
+/// Do NOT use for MMIO destinations — use `fill_rect()` there.
+pub fn fill_rect_ram(
+    dst: *mut u8,
+    dst_stride: u32,
+    dst_w: u32,
+    dst_h: u32,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    color: u32,
+) {
+    if dst.is_null() || w == 0 || h == 0 { return; }
+    if x >= dst_w || y >= dst_h { return; }
+    let w = w.min(dst_w - x);
+    let h = h.min(dst_h - y);
+    unsafe {
+        for row in 0..h as usize {
+            let row_ptr = dst.add(
+                (y as usize + row) * dst_stride as usize + x as usize * 4,
+            ) as *mut u32;
+            for col in 0..w as usize {
+                *row_ptr.add(col) = color;
             }
         }
     }
 }
 
-/// Flush any pending drawing to hardware.
-///
-/// For now, drawing happens directly in the framebuffer, so this is a no-op.
+/// Flush any pending drawing to hardware (stub — drawing is direct to MMIO).
 pub fn flush() {
-    // In a future version we might maintain a backbuffer and copy here.
+    // Compositor path flushes via sys_fb_flush → blit(BACKBUFFER → MMIO).
 }
 
 /// Draw a test pattern to verify framebuffer is writable and visible.

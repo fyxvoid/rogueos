@@ -1,25 +1,28 @@
 //! Unified session binary: server + compositor + WM in one process.
-//! Uses kernel backend (sys_fb_*). Handles input and shortcuts.
+//!
+//! Rendering model: tries BackbufferBackend first (claim compositor → map
+//! backbuffer → write entire frame → single sys_fb_flush).  Falls back to
+//! KernelBackend (per-rect sys_fb_fill_rect) if the compositor is already held.
 
 #![no_std]
 #![no_main]
 
 use libs::keycodes;
-use userland::backend_kernel::KernelBackend;
+use userland::backend_kernel::{BackbufferBackend, KernelBackend};
 use userland::{
     sys_exit, sys_poll_input, sys_write,
 };
 use userland_compositor::{composite, Compositor};
-use userland_core::{Config, ShortcutAction};
+use userland_core::{Config, DisplayBackend, ShortcutAction};
 use userland_server::Server;
 use userland_utils;
 use userland_wm::{key_to_action, Window, Wm};
 
-const BG_COLOR: u32 = 0xFF202020;
-const WINDOW_INACTIVE: u32 = 0xFF303040;
-const WINDOW_ACTIVE: u32 = 0xFF505080;
-const BORDER_INACTIVE: u32 = 0xFF101010;
-const BORDER_ACTIVE: u32 = 0xFFAAAAFF;
+const BG_COLOR: u32 = 0xFF1A0A2E;       // RogueOS brand dark purple
+const WINDOW_INACTIVE: u32 = 0xFF2D1B69;
+const WINDOW_ACTIVE: u32 = 0xFF4B3B8C;
+const BORDER_INACTIVE: u32 = 0xFF0D0520;
+const BORDER_ACTIVE: u32 = 0xFF8B7BCC;
 
 static WINDOWS: [Window; 3] = [
     Window::new(80, 80, 320, 200, WINDOW_INACTIVE, BORDER_INACTIVE, 2),
@@ -36,12 +39,58 @@ fn default_config() -> Config {
     c
 }
 
+// ── Backend enum: BackbufferBackend preferred, KernelBackend as fallback ─────
+
+enum AnyBackend {
+    Backbuffer(BackbufferBackend),
+    Kernel(KernelBackend),
+}
+
+impl DisplayBackend for AnyBackend {
+    fn screen_size(&self) -> (u32, u32) {
+        match self {
+            AnyBackend::Backbuffer(b) => b.screen_size(),
+            AnyBackend::Kernel(b) => b.screen_size(),
+        }
+    }
+    fn clear(&mut self, color: u32) {
+        match self {
+            AnyBackend::Backbuffer(b) => b.clear(color),
+            AnyBackend::Kernel(b) => b.clear(color),
+        }
+    }
+    fn fill_rect(&mut self, x: u32, y: u32, w: u32, h: u32, color: u32) {
+        match self {
+            AnyBackend::Backbuffer(b) => b.fill_rect(x, y, w, h, color),
+            AnyBackend::Kernel(b) => b.fill_rect(x, y, w, h, color),
+        }
+    }
+    fn flush(&mut self) {
+        match self {
+            AnyBackend::Backbuffer(b) => b.flush(),
+            AnyBackend::Kernel(b) => b.flush(),
+        }
+    }
+}
+
 #[no_mangle]
 fn _start() -> ! {
     log(b"[session] started\r\n");
 
+    // Prefer the backbuffer model: claim compositor → map backbuffer →
+    // write all pixels in userland → single sys_fb_flush per frame.
+    let backend = match BackbufferBackend::claim() {
+        Some(bb) => {
+            log(b"[session] backbuffer compositor claimed\r\n");
+            AnyBackend::Backbuffer(bb)
+        }
+        None => {
+            log(b"[session] backbuffer unavailable; using legacy fb syscalls\r\n");
+            AnyBackend::Kernel(KernelBackend::new())
+        }
+    };
+
     let config = default_config();
-    let backend = KernelBackend::new();
     let mut server = Server::new(backend);
     let mut compositor = Compositor::new(&config);
     let mut wm = Wm::new(&WINDOWS);
@@ -57,7 +106,7 @@ fn _start() -> ! {
     }; 16];
 
     fn draw(
-        server: &mut Server<KernelBackend>,
+        server: &mut Server<AnyBackend>,
         compositor: &Compositor,
         wm: &Wm,
         rect_buf: &mut [userland_compositor::WindowRect],

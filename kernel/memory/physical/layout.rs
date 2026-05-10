@@ -11,5 +11,5 @@ pub const FRAME_REGION_BASE: u64 = 2 * 1024 * 1024;
 /// Default number of pages in the frame region (8 MiB total).
 pub const FRAME_REGION_PAGES: usize = 2048;
 
-/// Maximum allocation order: 2^MAX_ORDER pages per block (e.g. 12 => 16 MiB max block).
-pub const MAX_ORDER: usize = 12;
+/// Maximum allocation order: 2^MAX_ORDER pages per block (18 => 1 GiB max block, handles 256 MiB+ regions).
+pub const MAX_ORDER: usize = 18;

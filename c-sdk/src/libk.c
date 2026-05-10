@@ -1,4 +1,4 @@
-/* libk.c — minimal libc replacement for Kingdom OS C/C++ apps.
+/* libk.c — minimal libc replacement for RogueOS C/C++ apps.
  *
  * Provides: memcpy, memmove, memset, memcmp, strlen, strcpy, strncpy,
  *           strcmp, strncmp, snprintf (subset), and a simple bump allocator.
@@ -9,7 +9,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdarg.h>
-#include "kingdom.h"
+#include "rogueos.h"
 
 /* ── Memory ─────────────────────────────────────────────────────────────── */
 

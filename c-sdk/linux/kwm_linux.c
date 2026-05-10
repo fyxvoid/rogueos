@@ -1,15 +1,15 @@
-/* kwm_linux.c — Linux shim for Kingdom OS syscalls.
+/* kwm_linux.c — Linux shim for RogueOS syscalls.
  *
- * When compiled with -DKINGDOM_LINUX, kingdom.h declares k_syscallN() as
- * extern functions.  This file provides implementations that map Kingdom
+ * When compiled with -DROGUEOS_LINUX, rogueos.h declares k_syscallN() as
+ * extern functions.  This file provides implementations that map RogueOS
  * syscall numbers to Linux equivalents so you can develop and test C apps
- * on a Linux host before running them on Kingdom OS.
+ * on a Linux host before running them on RogueOS.
  *
  * IPC (SYS_IPC_SEND / SYS_IPC_RECV) is not yet shimmed here — use the Unix
  * socket path or write directly to a file for quick local tests.
  *
  * Compile:
- *   gcc -DKINGDOM_LINUX -I../include -o myapp myapp.c kwm_linux.c libk.c
+ *   gcc -DROGUEOS_LINUX -I../include -o myapp myapp.c kwm_linux.c libk.c
  */
 
 #define _GNU_SOURCE
@@ -22,9 +22,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "kingdom.h"
+#include "rogueos.h"
 
-/* Map Kingdom syscall numbers → Linux actions. */
+/* Map RogueOS syscall numbers → Linux actions. */
 static long _dispatch(long num, long a1, long a2, long a3, long a4, long a5, long a6) {
     (void)a4; (void)a5; (void)a6;
     switch (num) {

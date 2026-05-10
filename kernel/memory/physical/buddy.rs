@@ -154,6 +154,15 @@ fn push_free(pa: u64, order: usize) {
         ptr::write(ptr, FreeLink { next });
         FREE_LISTS[order] = pa;
     }
+    #[cfg(not(test))]
+    {
+        let head = unsafe { FREE_LISTS[order] };
+        crate::arch::x86_64::serial::write_str("[buddy] push_free done: FREE_LISTS[");
+        crate::arch::x86_64::serial::write_hex(order as u64);
+        crate::arch::x86_64::serial::write_str("]=");
+        crate::arch::x86_64::serial::write_hex(head);
+        crate::arch::x86_64::serial::write_str("\r\n");
+    }
 }
 
 fn remove_from_free_list(pa: u64, order: usize) -> bool {
@@ -257,7 +266,7 @@ pub fn build_initial_freelist() {
         }
     }
     let mut order = 0;
-    while (1 << (order + 1)) <= pages {
+    while (1 << (order + 1)) <= pages && order < MAX_ORDER {
         order += 1;
     }
     push_free(start, order);
@@ -291,6 +300,15 @@ pub fn alloc_order(order: usize) -> u64 {
     }
     if order > MAX_ORDER {
         return 0;
+    }
+    #[cfg(not(test))]
+    {
+        let fl0 = unsafe { FREE_LISTS[0] };
+        crate::arch::x86_64::serial::write_str("[buddy] alloc_order entry: order=");
+        crate::arch::x86_64::serial::write_hex(order as u64);
+        crate::arch::x86_64::serial::write_str(" FREE_LISTS[0]=");
+        crate::arch::x86_64::serial::write_hex(fl0);
+        crate::arch::x86_64::serial::write_str("\r\n");
     }
     let mut k = order;
     loop {

@@ -19,6 +19,10 @@ fn get_or_alloc_child(parent: *mut Table, idx: usize) -> *mut Table {
     unsafe {
         let e = (*parent).get(idx);
         if (e & PageFlag::Present as u64) != 0 {
+            // Ensure User bit is set on existing intermediate entry so ring-3 can traverse it.
+            if (e & PageFlag::User as u64) == 0 {
+                (*parent).set(idx, e | PageFlag::User as u64);
+            }
             return page_table::phys_to_virt_table(e & FRAME_MASK);
         }
         let Some(child_pa) = alloc_table_page() else {
@@ -26,7 +30,7 @@ fn get_or_alloc_child(parent: *mut Table, idx: usize) -> *mut Table {
         };
         let child = page_table::phys_to_virt_table(child_pa);
         core::ptr::write_bytes(child as *mut u8, 0, PAGE_SIZE);
-        let flags = EntryFlags::empty().with(PageFlag::Present).with(PageFlag::Writable);
+        let flags = EntryFlags::empty().with(PageFlag::Present).with(PageFlag::Writable).with(PageFlag::User);
         (*parent).set(idx, page_table::Table::encode_entry(child_pa, flags));
         child
     }
@@ -42,16 +46,20 @@ fn get_or_alloc_pd(pdpt: *mut Table, pdpt_idx: usize) -> *mut Table {
             };
             let child = page_table::phys_to_virt_table(child_pa);
             core::ptr::write_bytes(child as *mut u8, 0, PAGE_SIZE);
-            let flags = EntryFlags::empty().with(PageFlag::Present).with(PageFlag::Writable);
+            let flags = EntryFlags::empty().with(PageFlag::Present).with(PageFlag::Writable).with(PageFlag::User);
             (*pdpt).set(pdpt_idx, page_table::Table::encode_entry(child_pa, flags));
             return child;
         }
         if (e & PDPTE_PS) == 0 {
+            // Existing entry: ensure User bit is set.
+            if (e & PageFlag::User as u64) == 0 {
+                (*pdpt).set(pdpt_idx, e | PageFlag::User as u64);
+            }
             return page_table::phys_to_virt_table(e & FRAME_MASK);
         }
         // 1GB page: split into 512×2MB in a new PD.
         let base_pa = e & PDPTE_1GB_FRAME_MASK;
-        let leaf_flags = (e & 0xFFF) | PDE_PS;
+        let leaf_flags = (e & 0xFFF) | PDE_PS | PageFlag::User as u64;
         let Some(pd_pa) = alloc_table_page() else {
             return core::ptr::null_mut();
         };
@@ -61,7 +69,7 @@ fn get_or_alloc_pd(pdpt: *mut Table, pdpt_idx: usize) -> *mut Table {
             let pa = base_pa + (i as u64) * PAGE_SIZE_2MB as u64;
             (*pd).set(i, (pa & PDE_2MB_FRAME_MASK) | leaf_flags);
         }
-        let table_flags = EntryFlags::empty().with(PageFlag::Present).with(PageFlag::Writable);
+        let table_flags = EntryFlags::empty().with(PageFlag::Present).with(PageFlag::Writable).with(PageFlag::User);
         (*pdpt).set(pdpt_idx, (pd_pa & FRAME_MASK) | table_flags.as_u64());
         pd
     }
@@ -77,16 +85,21 @@ fn get_or_alloc_pt(pd: *mut Table, pd_idx: usize) -> *mut Table {
             };
             let child = page_table::phys_to_virt_table(child_pa);
             core::ptr::write_bytes(child as *mut u8, 0, PAGE_SIZE);
-            let flags = EntryFlags::empty().with(PageFlag::Present).with(PageFlag::Writable);
+            let flags = EntryFlags::empty().with(PageFlag::Present).with(PageFlag::Writable).with(PageFlag::User);
             (*pd).set(pd_idx, page_table::Table::encode_entry(child_pa, flags));
             return child;
         }
         if (e & PDE_PS) == 0 {
+            // Existing PT entry: ensure User bit is set.
+            if (e & PageFlag::User as u64) == 0 {
+                (*pd).set(pd_idx, e | PageFlag::User as u64);
+            }
             return page_table::phys_to_virt_table(e & FRAME_MASK);
         }
         // 2MB page: split. Base PA is in bits 21-51.
         let base_pa = e & PDE_2MB_FRAME_MASK;
-        let leaf_flags = e & 0xFFF & !PDE_PS;
+        // Preserve existing leaf flags; add User so ring-3 can access these pages.
+        let leaf_flags = (e & 0xFFF & !PDE_PS) | PageFlag::User as u64;
         let Some(pt_pa) = alloc_table_page() else {
             return core::ptr::null_mut();
         };
@@ -96,16 +109,20 @@ fn get_or_alloc_pt(pd: *mut Table, pd_idx: usize) -> *mut Table {
             let pa = base_pa + (i as u64) * PAGE_SIZE as u64;
             (*pt).set(i, (pa & FRAME_MASK) | leaf_flags);
         }
-        let table_flags = EntryFlags::empty().with(PageFlag::Present).with(PageFlag::Writable);
+        let table_flags = EntryFlags::empty().with(PageFlag::Present).with(PageFlag::Writable).with(PageFlag::User);
         (*pd).set(pd_idx, (pt_pa & FRAME_MASK) | table_flags.as_u64());
         pt
     }
 }
 
 use crate::memory::paging::levels::FRAME_MASK;
-/// Enough to identity-map 256 MiB (e.g. frame region): ~66 tables; 128 leaves headroom.
-const PT_POOL_PAGES: usize = 128;
-static mut PT_POOL: [u8; PT_POOL_PAGES * PAGE_SIZE] = [0; PT_POOL_PAGES * PAGE_SIZE];
+/// Enough to identity-map 512 MiB + per-process page tables: 512 pages.
+const PT_POOL_PAGES: usize = 512;
+
+/// Page-table pool must be 4K-aligned so allocated PAs are 4K-aligned (CR3 / PTE entries mask low 12 bits).
+#[repr(C, align(4096))]
+struct PagePool([u8; PT_POOL_PAGES * PAGE_SIZE]);
+static mut PT_POOL: PagePool = PagePool([0; PT_POOL_PAGES * PAGE_SIZE]);
 static mut PT_POOL_NEXT: usize = 0;
 
 /// Allocate one page for use as a page table. From static pool (bootstrap). Returns None when pool exhausted.
@@ -120,29 +137,51 @@ pub fn alloc_table_page() -> Option<u64> {
             }
             return None;
         }
-        let pa = PT_POOL.as_ptr() as usize + PT_POOL_NEXT * PAGE_SIZE;
+        let pa = PT_POOL.0.as_ptr() as usize + PT_POOL_NEXT * PAGE_SIZE;
         PT_POOL_NEXT += 1;
         Some(pa as u64)
     }
 }
 
 /// Map one page in the given address space (by CR3). Does not switch CR3.
+/// If `flags` has the User bit, that bit is propagated to all intermediate
+/// page-table entries so CPL=3 instruction/data fetches are not rejected at
+/// the PML4/PDPT/PD level (x86-64 requires U=1 at every level for user access).
 pub fn map_page_into_space(cr3: u64, va: u64, pa: u64, flags: u64) -> bool {
+    let user_bit = PageFlag::User as u64;
     let pml4 = page_table::phys_to_virt_table(cr3 & FRAME_MASK) as *mut Table;
     unsafe {
         let pdpt = get_or_alloc_child(pml4, levels::pml4_index(va));
         if pdpt.is_null() {
             return false;
         }
+        // Propagate User bit into the PML4 entry so user-mode walks succeed.
+        if (flags & user_bit) != 0 {
+            let idx = levels::pml4_index(va);
+            let e = (*pml4).get(idx);
+            (*pml4).set(idx, e | user_bit);
+        }
         let pd = get_or_alloc_pd(pdpt, levels::pdpt_index(va));
         if pd.is_null() {
             return false;
+        }
+        // Propagate User bit into the PDPT entry.
+        if (flags & user_bit) != 0 {
+            let idx = levels::pdpt_index(va);
+            let e = (*pdpt).get(idx);
+            (*pdpt).set(idx, e | user_bit);
         }
         let pt = get_or_alloc_pt(pd, levels::pd_index(va));
         if pt.is_null() {
             return false;
         }
-        let entry = (pa & FRAME_MASK) | (flags & 0xFFF);
+        // Propagate User bit into the PD entry.
+        if (flags & user_bit) != 0 {
+            let idx = levels::pd_index(va);
+            let e = (*pd).get(idx);
+            (*pd).set(idx, e | user_bit);
+        }
+        let entry = (pa & FRAME_MASK) | (flags & !FRAME_MASK);
         (*pt).set(levels::pt_index(va), entry);
         true
     }
@@ -168,7 +207,7 @@ pub fn map_page_2mb_into_space(cr3: u64, va: u64, pa: u64, flags: u64) -> bool {
         if (e & PageFlag::Present as u64) != 0 && (e & PDE_PS) == 0 {
             return false;
         }
-        (*pd).set(idx, (pa & PDE_2MB_FRAME_MASK) | (flags & 0xFFF) | PDE_PS);
+        (*pd).set(idx, (pa & PDE_2MB_FRAME_MASK) | (flags & !FRAME_MASK) | PDE_PS);
         true
     }
 }
@@ -189,7 +228,7 @@ pub fn map_page_1gb_into_space(cr3: u64, va: u64, pa: u64, flags: u64) -> bool {
         if (e & PageFlag::Present as u64) != 0 && (e & PDPTE_PS) == 0 {
             return false;
         }
-        (*pdpt).set(idx, (pa & PDPTE_1GB_FRAME_MASK) | (flags & 0xFFF) | PDPTE_PS);
+        (*pdpt).set(idx, (pa & PDPTE_1GB_FRAME_MASK) | (flags & !FRAME_MASK) | PDPTE_PS);
         true
     }
 }
@@ -204,7 +243,7 @@ unsafe fn relocate_tables_outside_2mb(
     va: u64,
     base_pa: u64,
 ) -> (*mut Table, *mut Table) {
-    let flags = EntryFlags::empty().with(PageFlag::Present).with(PageFlag::Writable);
+    let flags = EntryFlags::empty().with(PageFlag::Present).with(PageFlag::Writable).with(PageFlag::User);
     let pdpt_pa = pdpt as u64;
     if pdpt_pa >= base_pa && pdpt_pa < base_pa + TWO_MB {
         // #region agent log
@@ -315,7 +354,8 @@ pub fn map_page(va: u64, pa: u64, flags: u64) -> bool {
             crate::arch::x86_64::serial::write_str(" set_pte\r\n");
         }
         // #endregion
-        (*pt).set(levels::pt_index(va), (pa & FRAME_MASK) | (flags & 0xFFF));
+        // Preserve both the low 12 flag bits AND bit 63 (NX/NoExec).
+        (*pt).set(levels::pt_index(va), (pa & FRAME_MASK) | (flags & !FRAME_MASK));
         // #region agent log
         #[cfg(not(test))]
         if pa == 0x1780000 {
@@ -359,6 +399,23 @@ pub fn unmap_page(va: u64) {
         if (e & PageFlag::Present as u64) == 0 {
             return;
         }
+        let pt = page_table::phys_to_virt_table(e & FRAME_MASK) as *mut Table;
+        (*pt).set(levels::pt_index(va), 0);
+    }
+}
+
+/// Unmap a single 4K page in the given address space (by CR3).
+pub fn unmap_page_in_space(cr3: u64, va: u64) {
+    let pml4 = page_table::phys_to_virt_table(cr3 & FRAME_MASK) as *mut Table;
+    unsafe {
+        let e = (*pml4).get(levels::pml4_index(va));
+        if (e & PageFlag::Present as u64) == 0 { return; }
+        let pdpt = page_table::phys_to_virt_table(e & FRAME_MASK) as *mut Table;
+        let e = (*pdpt).get(levels::pdpt_index(va));
+        if (e & PageFlag::Present as u64) == 0 { return; }
+        let pd = page_table::phys_to_virt_table(e & FRAME_MASK) as *mut Table;
+        let e = (*pd).get(levels::pd_index(va));
+        if (e & PageFlag::Present as u64) == 0 { return; }
         let pt = page_table::phys_to_virt_table(e & FRAME_MASK) as *mut Table;
         (*pt).set(levels::pt_index(va), 0);
     }
@@ -414,6 +471,91 @@ pub fn new_address_space() -> u64 {
         pa
     } else {
         0
+    }
+}
+
+// ── Per-process CR3 ────────────────────────────────────────────────────────
+
+/// Saved after paging::init() so every new process can inherit kernel mappings.
+static mut KERNEL_CR3: u64 = 0;
+
+/// Called by paging::init() after the kernel CR3 is live.
+pub fn set_kernel_cr3(cr3: u64) {
+    unsafe { KERNEL_CR3 = cr3; }
+}
+
+/// The kernel's CR3, for use by diagnostics and process creation.
+pub fn get_kernel_cr3() -> u64 {
+    unsafe { KERNEL_CR3 }
+}
+
+/// PCID counter — simple bump allocator (1-4094; 0 = no PCID).
+static mut PCID_NEXT: u16 = 1;
+
+/// Allocate a unique PCID for a new process. Wraps after 4094.
+pub fn alloc_pcid() -> u16 {
+    unsafe {
+        let p = PCID_NEXT;
+        PCID_NEXT = if PCID_NEXT >= 4094 { 1 } else { PCID_NEXT + 1 };
+        p
+    }
+}
+
+/// Allocate a fresh per-process address space that shares kernel PML4 mappings.
+/// Returns the new CR3 value, or 0 on allocation failure.
+pub fn create_process_cr3() -> u64 {
+    let kernel_cr3 = unsafe { KERNEL_CR3 };
+    if kernel_cr3 == 0 {
+        // KERNEL_CR3 not set yet — fall back to sharing current CR3 (bootstrap only).
+        #[cfg(not(test))]
+        crate::arch::x86_64::serial::write_str("[PAGING] create_process_cr3: KERNEL_CR3 not set, using read_cr3\r\n");
+        return crate::memory::paging::tlb::read_cr3();
+    }
+
+    unsafe {
+        let kernel_pml4 = page_table::phys_to_virt_table(kernel_cr3 & FRAME_MASK) as *mut Table;
+
+        // 1. Allocate + copy fresh PML4 (shares kernel higher-half entries).
+        let new_pml4_pa = match alloc_table_page() { Some(p) => p, None => return 0 };
+        let new_pml4 = page_table::phys_to_virt_table(new_pml4_pa) as *mut Table;
+        core::ptr::copy_nonoverlapping(kernel_pml4 as *const u8, new_pml4 as *mut u8, PAGE_SIZE);
+
+        // 2. Deep-copy PML4[0] → fresh PDPT so user modifications don't touch kernel's PDPT.
+        let kpml4_e0 = (*kernel_pml4).get(0);
+        if (kpml4_e0 & PageFlag::Present as u64) != 0 {
+            let kernel_pdpt = page_table::phys_to_virt_table(kpml4_e0 & FRAME_MASK) as *mut Table;
+
+            let new_pdpt_pa = match alloc_table_page() { Some(p) => p, None => return 0 };
+            let new_pdpt = page_table::phys_to_virt_table(new_pdpt_pa) as *mut Table;
+            core::ptr::copy_nonoverlapping(kernel_pdpt as *const u8, new_pdpt as *mut u8, PAGE_SIZE);
+
+            let flags0 = kpml4_e0 & !FRAME_MASK;
+            (*new_pml4).set(0, (new_pdpt_pa & FRAME_MASK) | flags0);
+
+            // 3. Deep-copy PDPT[0] → fresh PD; zero PD[5] (user load base = 0xA00000 → pd_idx 5).
+            let kpdpt_e0 = (*kernel_pdpt).get(0);
+            if (kpdpt_e0 & PageFlag::Present as u64) != 0 && (kpdpt_e0 & PDPTE_PS) == 0 {
+                let kernel_pd = page_table::phys_to_virt_table(kpdpt_e0 & FRAME_MASK) as *mut Table;
+
+                let new_pd_pa = match alloc_table_page() { Some(p) => p, None => return 0 };
+                let new_pd = page_table::phys_to_virt_table(new_pd_pa) as *mut Table;
+                core::ptr::copy_nonoverlapping(kernel_pd as *const u8, new_pd as *mut u8, PAGE_SIZE);
+
+                // Zero PD[5] — the 2MB range 0xA00000-0xBFFFFF where user ELFs load
+                // (USER_LOAD_BASE = 0xA00000). The kernel .bss ends at ~0x695218, so
+                // PD[0..4] all carry kernel identity mappings that must stay intact.
+                // PML4[255] (user stack, 0x7fff_...) is cleared separately below.
+                (*new_pd).set(5, 0);
+
+                let flags1 = kpdpt_e0 & !FRAME_MASK;
+                (*new_pdpt).set(0, (new_pd_pa & FRAME_MASK) | flags1);
+            }
+        }
+
+        // 4. Clear PML4[255] (user stack range 0x7fff_...) for isolation.
+        (*new_pml4).set(255, 0);
+
+        new_pml4_pa
     }
 }
 
@@ -673,6 +815,8 @@ pub fn init() {
         pa += PAGE_SIZE as u64;
     }
     unsafe { tlb::write_cr3(our_cr3) };
+    // Save KERNEL_CR3 so per-process address spaces can inherit kernel mappings.
+    set_kernel_cr3(our_cr3);
     #[cfg(not(test))]
     {
         crate::arch::x86_64::serial::write_str("[KRN] switched to kernel CR3\r\n");

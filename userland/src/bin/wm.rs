@@ -33,12 +33,12 @@
 #![no_std]
 #![no_main]
 
-use libs::{keycodes::*, IPC_NONBLOCK, RwmMsg};
+use libs::{keycodes::*, IPC_NONBLOCK, MouseEvent, RwmMsg};
 use libs::KeyEvent;
 use userland::{
     sys_claim_compositor, sys_exit, sys_fb_clear, sys_fb_fill_rect, sys_fb_flush,
-    sys_ipc_recv, sys_ipc_send,
-    sys_poll_input, sys_spawn, sys_write,
+    sys_gettime, sys_ipc_recv, sys_ipc_send, sys_map_framebuffer,
+    sys_poll_input, sys_poll_mouse, sys_spawn, sys_write,
     sys_surface_commit, sys_surface_destroy, sys_surface_set_z,
 };
 
@@ -81,10 +81,11 @@ const GAP:      i32 = 6;
 const MAX_WIN:  usize = 16;
 const TAG_CNT:  usize = 9;
 
-// Program IDs (must match kernel/audits/main.rs register() calls).
-const PROG_SHELL:  u32 = 0;
-const PROG_EDITOR: u32 = 2;
-const PROG_VIEWER: u32 = 3;
+// Program IDs (must match kernel/init/main.rs register() calls).
+const PROG_SHELL:    u32 = 0;
+const PROG_EDITOR:   u32 = 2;
+const PROG_VIEWER:   u32 = 3;
+const PROG_TERMINAL: u32 = 12;
 
 // ── Layout modes ─────────────────────────────────────────────────────────────
 
@@ -231,6 +232,13 @@ struct Wm {
     ctrl_dn:   bool,
     /// Needs a redraw on next composite pass.
     dirty:     bool,
+    // Mouse state.
+    mouse_x:   i32,
+    mouse_y:   i32,
+    mouse_btn: u8,  // current button bitmask (bit 0 = left)
+    drag_idx:  Option<usize>, // client being dragged, if any
+    drag_ox:   i32, // offset from client origin to mouse click point
+    drag_oy:   i32,
 }
 
 impl Wm {
@@ -256,6 +264,12 @@ impl Wm {
             shift_dn:     false,
             ctrl_dn:      false,
             dirty:        true,
+            mouse_x:      0,
+            mouse_y:      0,
+            mouse_btn:    0,
+            drag_idx:     None,
+            drag_ox:      0,
+            drag_oy:      0,
         }
     }
 
@@ -734,7 +748,8 @@ fn draw_char(px: u32, py: u32, ch: u8, color: u32) {
     let bits = glyph_bits(ch);
     if bits == 0 { return; }
     for row in 0..FONT_H {
-        let row_bits = (bits >> (row * FONT_W)) & 0xF;
+        // Font encoding: nibble (FONT_H-1) = top row, nibble 0 = bottom row.
+        let row_bits = (bits >> ((FONT_H - 1 - row) * FONT_W)) & 0xF;
         if row_bits == 0 { continue; }
         // Emit one fill_rect per contiguous run of set pixels in this row.
         let mut col = 0u32;
@@ -813,11 +828,21 @@ fn draw_bar(wm: &Wm) {
         }
     }
 
-    // ── Status text (right-aligned) ───────────────────────────────────
-    let status: &[u8] = b"rogueos";
-    let sw = status.len() as u32 * (FONT_W + 1);
+    // ── Clock (right-aligned) ─────────────────────────────────────────
+    let packed = sys_gettime();
+    let hours  = ((packed >> 16) & 0xFF) as u8;
+    let mins   = ((packed >>  8) & 0xFF) as u8;
+    // "HH:MM"
+    let clock: [u8; 5] = [
+        b'0' + hours / 10,
+        b'0' + hours % 10,
+        b':',
+        b'0' + mins / 10,
+        b'0' + mins % 10,
+    ];
+    let sw = clock.len() as u32 * (FONT_W + 1);
     let rx = wm.sw.saturating_sub(sw + 6);
-    draw_text(rx, text_y, status, C_STATUS);
+    draw_text(rx, text_y, &clock, C_STATUS);
 
     // Separator line below bar.
     let _ = sys_fb_fill_rect(0, BAR_H - 1, wm.sw, 1, 0xFF_29_2E_42);
@@ -1188,9 +1213,9 @@ fn handle_key(wm: &mut Wm, key: u8, pressed: bool) -> bool {
             KEY_ENTER => { wm.zoom(); return true; }
             // Spawn programs.
             KEY_D => {
-                let pid = sys_spawn(PROG_SHELL);
+                let pid = sys_spawn(PROG_TERMINAL);
                 if pid > 0 {
-                    let idx = wm.add_client(PROG_SHELL as u8, b"shell");
+                    let idx = wm.add_client(PROG_TERMINAL as u8, b"terminal");
                     wm.clients[idx].pid = pid as u32;
                     wm.focused = idx;
                 }
@@ -1294,6 +1319,57 @@ fn handle_key(wm: &mut Wm, key: u8, pressed: bool) -> bool {
     false
 }
 
+// ── Mouse handling ────────────────────────────────────────────────────────────
+
+/// Process one MouseEvent. Returns true if a redraw is needed.
+fn handle_mouse(wm: &mut Wm, ev: &MouseEvent) -> bool {
+    // Accumulate position, clamped to screen bounds.
+    wm.mouse_x = (wm.mouse_x + ev.dx as i32).clamp(0, wm.sw as i32 - 1);
+    wm.mouse_y = (wm.mouse_y + ev.dy as i32).clamp(0, wm.sh as i32 - 1);
+
+    let prev_btn = wm.mouse_btn;
+    wm.mouse_btn = ev.buttons;
+    let left_down = ev.buttons & 0x01 != 0;
+    let left_just_pressed = left_down && (prev_btn & 0x01 == 0);
+    let left_just_released = !left_down && (prev_btn & 0x01 != 0);
+
+    if left_just_released {
+        wm.drag_idx = None;
+        return false;
+    }
+
+    if left_just_pressed {
+        // Find a floating window under the cursor.
+        for i in 0..MAX_WIN {
+            let c = &wm.clients[i];
+            if !c.alive || !c.floating || (c.tags & wm.sel_tags()) == 0 { continue; }
+            let in_x = wm.mouse_x >= c.x && wm.mouse_x < c.x + c.w as i32;
+            let in_y = wm.mouse_y >= c.y && wm.mouse_y < c.y + c.h as i32;
+            if in_x && in_y {
+                wm.drag_idx = Some(i);
+                wm.drag_ox  = wm.mouse_x - c.x;
+                wm.drag_oy  = wm.mouse_y - c.y;
+                wm.focused  = i;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Drag: move the floating window.
+    if left_down {
+        if let Some(idx) = wm.drag_idx {
+            let new_x = wm.mouse_x - wm.drag_ox;
+            let new_y = wm.mouse_y - wm.drag_oy;
+            wm.clients[idx].x = new_x;
+            wm.clients[idx].y = new_y;
+            return true;
+        }
+    }
+
+    false
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -1310,6 +1386,26 @@ fn _start() -> ! {
                   I am now the sole arbiter of what reaches the screen, sir.\r\n");
     }
 
+    // Allocate the kernel RAM backbuffer. Once this returns, every subsequent
+    // sys_fb_clear, sys_fb_fill_rect, and sys_surface_commit writes to cached
+    // RAM instead of uncached MMIO. The single MMIO flush happens at the end
+    // of each draw_scene call via sys_fb_flush (BACKBUFFER → MMIO).
+    {
+        let mut bb_ptr: u64 = 0;
+        let mut bb_w:   u32 = 0;
+        let mut bb_h:   u32 = 0;
+        let mut bb_s:   u32 = 0;
+        let r = sys_map_framebuffer(&mut bb_ptr, &mut bb_w, &mut bb_h, &mut bb_s);
+        if r < 0 {
+            cog_log(b"[Cogman] WARNING: backbuffer alloc failed; degraded MMIO-only mode.\r\n");
+        } else {
+            cog_log(b"[Cogman] Backbuffer ready. All drawing routes to RAM; one MMIO flush/frame.\r\n");
+        }
+        // bb_ptr/bb_w/bb_h/bb_s are intentionally discarded here: the kernel
+        // syscall layer intercepts all subsequent sys_fb_* calls automatically.
+        let _ = (bb_ptr, bb_w, bb_h, bb_s);
+    }
+
     let mut wm = Wm::new();
 
     // Pre-create a welcome placeholder (no RDP surface; drawn with fb ops).
@@ -1320,8 +1416,9 @@ fn _start() -> ! {
     draw_scene(&mut wm);
     cog_log(b"[Cogman] Initial scene rendered, sir. Your workspace is ready.\r\n");
 
-    let mut ev = KeyEvent { keycode: 0, pressed: false };
-    let mut ipc_msg = RwmMsg::ZERO;
+    let mut ev_key   = KeyEvent   { keycode: 0, pressed: false };
+    let mut ev_mouse = MouseEvent { dx: 0, dy: 0, buttons: 0 };
+    let mut ipc_msg  = RwmMsg::ZERO;
     let mut idle_ticks: u32 = 0;
 
     loop {
@@ -1337,28 +1434,40 @@ fn _start() -> ! {
 
         // ── 2. Poll keyboard (non-blocking) ──────────────────────────────
         let mut key_changed = false;
-        let n = sys_poll_input(&mut ev);
+        let n = sys_poll_input(&mut ev_key);
         if n > 0 {
-            // Track modifier state (both press and release).
-            match ev.keycode {
-                KEY_MOD   => { wm.mod_dn   = ev.pressed; }
-                KEY_SHIFT => { wm.shift_dn = ev.pressed; }
-                KEY_CTRL  => { wm.ctrl_dn  = ev.pressed; }
+            match ev_key.keycode {
+                KEY_MOD   => { wm.mod_dn   = ev_key.pressed; }
+                KEY_SHIFT => { wm.shift_dn = ev_key.pressed; }
+                KEY_CTRL  => { wm.ctrl_dn  = ev_key.pressed; }
                 _ => {
-                    if handle_key(&mut wm, ev.keycode, ev.pressed) {
+                    if handle_key(&mut wm, ev_key.keycode, ev_key.pressed) {
                         key_changed = true;
                     }
                 }
             }
         }
 
-        // ── 3. Redraw if anything changed ────────────────────────────────
-        if ipc_changed || key_changed || wm.dirty {
+        // ── 3. Poll mouse (non-blocking) ─────────────────────────────────
+        let mut mouse_changed = false;
+        let m = sys_poll_mouse(&mut ev_mouse);
+        if m > 0 {
+            if handle_mouse(&mut wm, &ev_mouse) {
+                mouse_changed = true;
+            }
+        }
+
+        // ── 4. Periodic clock tick (force redraw to update time display) ─
+        if idle_ticks % 100_000 == 0 {
+            wm.dirty = true;
+        }
+
+        // ── 5. Redraw if anything changed ────────────────────────────────
+        if ipc_changed || key_changed || mouse_changed || wm.dirty {
             draw_scene(&mut wm);
             wm.dirty = false;
         }
 
-        // Periodic serial heartbeat (every ~200k ticks).
         if idle_ticks % 200_000 == 0 {
             cog_log(b"[Cogman] All quiet on the desktop, sir.\r\n");
         }

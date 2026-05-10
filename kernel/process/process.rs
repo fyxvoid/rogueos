@@ -3,6 +3,8 @@
 use crate::memory::paging;
 use crate::memory::r#virtual as virt;
 use crate::arch::x86_64::debug_regs::HwBpState;
+use crate::capability::CapSet;
+use crate::iflow::IflowLabel;
 use libs::{Uid, DEFAULT_SESSION_UID};
 
 // ---------------------------------------------------------------------------
@@ -75,6 +77,17 @@ pub struct ProcessDescriptor {
     pub hw_bp: HwBpState,
     /// PID this process is blocked waiting for (u32::MAX = any child). None if not blocked.
     pub waiting_for: Option<Pid>,
+    /// PCID (Process Context Identifier, bits 0-11 of CR3 when CR4.PCIDE=1).
+    /// 0 = PCID not in use. Assigned by paging::alloc_pcid() at spawn time.
+    pub pcid: u16,
+    /// Capability bitmask. Controls which syscalls this process may invoke.
+    /// Cogman (pid 1) is born with `CapSet::all()`; every other process starts
+    /// with the intersection of its parent's caps and the requested spawn mask.
+    pub caps: CapSet,
+    /// Information flow label. Controls where data produced by this process may go.
+    /// Cogman (pid 1) is born with public secrecy and full integrity.
+    /// All other processes are born with the parent's label (inherited at spawn).
+    pub iflow: IflowLabel,
 }
 
 impl ProcessDescriptor {
@@ -99,6 +112,9 @@ impl ProcessDescriptor {
             exit_status: None,
             hw_bp: HwBpState::new(),
             waiting_for: None,
+            pcid: 0,
+            caps: CapSet::none(),   // caller must set appropriate caps after construction
+            iflow: IflowLabel::default_user(), // caller overrides for pid 1 (Cogman)
         }
     }
 
@@ -123,10 +139,10 @@ pub type Pcb = ProcessDescriptor;
 // ---------------------------------------------------------------------------
 
 /// User virtual address for code load (e.g. ELF load base).
-pub const USER_LOAD_BASE: u64 = 0x400_000;
+pub const USER_LOAD_BASE: u64 = 0xA00_000;
 /// User stack top (below this).
 pub const USER_STACK_TOP: u64 = 0x7fff_ffff_f000;
-pub(crate) const USER_STACK_PAGES: usize = 2;
+pub(crate) const USER_STACK_PAGES: usize = 8;
 /// Palace userland is no_std and does not use malloc; no USER_HEAP_START or heap region.
 /// If userland gains a heap later: define USER_HEAP_START, ensure no overlap with stack, map on demand.
 const PAGE_SIZE: usize = 4096;
@@ -141,22 +157,33 @@ pub fn map_page_in_space(cr3: u64, va: u64, pa: u64, flags: u64) -> bool {
     virt::map_page_in_space(cr3, va, pa, flags)
 }
 
+/// Stack slot size: stack pages + guard page, per process.
+const STACK_SLOT_PAGES: u64 = (USER_STACK_PAGES as u64) + 1;
+
+/// Compute the unique stack top VA for a given process (1-indexed pid).
+/// Each process gets a non-overlapping stack window below USER_STACK_TOP.
+pub fn stack_top_for_pid(pid: u32) -> u64 {
+    // pid=1 → slot 0 → top = USER_STACK_TOP
+    // pid=2 → slot 1 → top = USER_STACK_TOP - STACK_SLOT_PAGES * PAGE_SIZE
+    let slot = (pid.saturating_sub(1)) as u64;
+    USER_STACK_TOP.saturating_sub(slot * STACK_SLOT_PAGES * PAGE_SIZE as u64)
+}
+
 /// Set up user stack mapping in the given address space. Returns Some(user RSP) or None on failure.
 /// Guard page below stack (unmapped); overflow causes #PF.
-pub fn setup_user_stack(cr3: u64) -> Option<u64> {
+pub fn setup_user_stack(cr3: u64, pid: u32) -> Option<u64> {
+    let stack_top = stack_top_for_pid(pid);
     let flags = paging::EntryFlags::user_rw().as_u64();
     for i in 0..USER_STACK_PAGES {
         let Some(pa) = virt::alloc_table_page() else {
             return None;
         };
-        let va = USER_STACK_TOP - (i as u64 * PAGE_SIZE as u64);
+        let va = stack_top - (i as u64 * PAGE_SIZE as u64);
         if !virt::map_page_in_space(cr3, va, pa, flags) {
             return None;
         }
     }
-    // Guard page: leave unmapped. VA = USER_STACK_TOP - USER_STACK_PAGES*PAGE_SIZE - PAGE_SIZE.
-    // Deliberate access below stack (e.g. overflow) triggers clean page fault.
-    Some(USER_STACK_TOP)
+    Some(stack_top)
 }
 
 /// Dump process table and runqueue state to serial (for diagnostics).
@@ -181,14 +208,14 @@ mod tests {
 
     #[test]
     fn test_process_descriptor_new() {
-        let tf = make_trap_frame(0x400_000);
+        let tf = make_trap_frame(0xA00_000);
         let p = ProcessDescriptor::new(1, ProcessState::Runnable, 0x1000, 0x8000, tf);
         assert_eq!(p.pid, 1);
         assert_eq!(p.uid, DEFAULT_SESSION_UID);
         assert_eq!(p.state, ProcessState::Runnable);
         assert_eq!(p.cr3, 0x1000);
         assert_eq!(p.kernel_stack_top, 0x8000);
-        assert_eq!(p.trap_frame.rip, 0x400_000);
+        assert_eq!(p.trap_frame.rip, 0xA00_000);
     }
 
     #[test]
@@ -210,7 +237,7 @@ mod tests {
     #[test]
     fn test_constants() {
         assert_eq!(MAX_PROCESSES, 64);
-        assert_eq!(USER_LOAD_BASE, 0x400_000);
+        assert_eq!(USER_LOAD_BASE, 0xA00_000);
         assert_eq!(USER_STACK_TOP, 0x7fff_ffff_f000);
     }
 }

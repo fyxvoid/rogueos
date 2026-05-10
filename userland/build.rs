@@ -1,6 +1,4 @@
-use std::path::PathBuf;
-
-fn main() {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    println!("cargo:rustc-link-arg=-T{}", manifest.join("linker.ld").display());
-}
+// Linker script selection is handled per-binary via RUSTFLAGS in the Makefile.
+// Each binary gets its own ldscripts/<name>.ld passed as -C link-arg=-T<path>.
+// This build script intentionally emits nothing to avoid overriding those scripts.
+fn main() {}

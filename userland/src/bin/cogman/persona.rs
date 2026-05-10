@@ -12,20 +12,26 @@ pub fn speak(msg: &[u8]) {
     let _ = sys_write(1, msg.as_ptr(), msg.len());
 }
 
+// Static buffer avoids stack corruption when a child process is spawned
+// (which overwrites the shared stack pages in the shared-CR3 kernel design).
+static mut SPEAK_BUF: [u8; 10] = *b"0000000000";
+
+#[inline(never)]
 pub fn speak_u32(n: u32) {
     if n == 0 {
         let _ = sys_write(1, b"0".as_ptr(), 1);
         return;
     }
-    let mut buf = [b'0'; 10];
     let mut i = 10usize;
     let mut v = n;
-    while v > 0 && i > 0 {
-        i -= 1;
-        buf[i] = b'0' + (v % 10) as u8;
-        v /= 10;
+    unsafe {
+        while v > 0 && i > 0 {
+            i -= 1;
+            SPEAK_BUF[i] = b'0' + (v % 10) as u8;
+            v /= 10;
+        }
+        let _ = sys_write(1, SPEAK_BUF.as_ptr().add(i), 10 - i);
     }
-    let _ = sys_write(1, buf[i..].as_ptr(), 10 - i);
 }
 
 // ── Boot greeting ─────────────────────────────────────────────────────────
@@ -50,6 +56,7 @@ pub fn greet() {
 
 // ── Supervisor events ─────────────────────────────────────────────────────
 
+#[inline(never)]
 pub fn say_spawning(name: &[u8], pid: u32) {
     speak(b"[Cogman] Bringing up ");
     speak(name);

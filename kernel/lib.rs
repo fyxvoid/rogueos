@@ -10,6 +10,8 @@
 extern crate alloc;
 
 pub mod arch;
+pub mod capability;
+pub mod iflow;
 pub mod memory;
 pub mod init;
 pub mod kernel;

@@ -24,6 +24,12 @@ const MONITOR_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/monitor.elf
 const SHUTDOWN_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shutdown.elf"));
 /// Embedded exit ELF (stress test: binary that only SYS_EXIT(0)).
 const EXIT_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/exit.elf"));
+/// Embedded fbtest ELF — end-to-end framebuffer test.
+const FBTEST_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fbtest.elf"));
+/// Embedded terminal ELF — RDP terminal emulator (Stage 10).
+const TERMINAL_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/terminal.elf"));
+/// Nova compositor ELF — dwm-style native compositor (program id 11).
+const NOVA_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nova.elf"));
 
 /// Set true to run stress: 10 sequential exit processes before init. System halts after 10th exit.
 const STRESS_EXIT_FIRST: bool = false;
@@ -52,6 +58,8 @@ pub extern "sysv64" fn kernel_main(bootinfo: *const libs::BootInfo) -> ! {
     crate::arch::x86_64::msr::init_syscall_msrs(
         crate::arch::x86_64::syscall_entry::syscall_entry as *const () as u64,
     );
+    // Enable CPU security: CR0.WP, CR4.SMEP, CR4.UMIP (CPUID-gated).
+    crate::arch::x86_64::cpuid::init_cpu_security();
     crate::arch::serial::write_str("[KRN] step0: idt_gdt_syscall_ready\r\n");
 
     // Phase 0b: AMD SME — enable memory encryption BEFORE paging so C-bit is
@@ -82,6 +90,12 @@ pub extern "sysv64" fn kernel_main(bootinfo: *const libs::BootInfo) -> ! {
 
     crate::arch::serial::write_str("[KRN] mem_map_valid=");
     crate::arch::serial::write_hex(bi.mem_map_valid as u64);
+    crate::arch::serial::write_str(" rsdp=");
+    crate::arch::serial::write_hex(bi.rsdp_addr);
+    crate::arch::serial::write_str(" smbios=");
+    crate::arch::serial::write_hex(bi.smbios_addr);
+    crate::arch::serial::write_str(" rt_services=");
+    crate::arch::serial::write_hex(bi.runtime_services_addr);
     crate::arch::serial::write_str("\r\n");
 
     // Init physical allocator from UEFI memory map (or use fixed region when BootInfo map invalid).
@@ -160,8 +174,11 @@ pub extern "sysv64" fn kernel_main(bootinfo: *const libs::BootInfo) -> ! {
     crate::kernel::programs::register(6, SHUTDOWN_ELF);   // PROG_SHUTDOWN
     crate::kernel::programs::register(7, EXIT_ELF);       // PROG_EXIT
     crate::kernel::programs::register(8, SESSION_ELF);    // PROG_SESSION
-    crate::kernel::programs::register(9, WM_ELF);         // PROG_WM_LEGACY
+    crate::kernel::programs::register(9, WM_ELF);         // PROG_WM (primary wm.rs)
     crate::kernel::programs::register(10, COGMAN_ELF);    // PROG_COGMAN (self-spawn slot)
+    crate::kernel::programs::register(11, FBTEST_ELF);    // PROG_FBTEST
+    crate::kernel::programs::register(12, TERMINAL_ELF);  // PROG_TERMINAL
+    crate::kernel::programs::register(13, NOVA_ELF);      // PROG_NOVA (dwm-style compositor)
 
     // Stress (optional): 10 sequential short-lived exit processes.
     if STRESS_EXIT_FIRST {
@@ -171,7 +188,7 @@ pub extern "sysv64" fn kernel_main(bootinfo: *const libs::BootInfo) -> ! {
         if let Some(exit_elf) = crate::kernel::programs::get_elf(7) {
             if exit_elf.len() >= 4 && exit_elf[0..4] == [0x7f, b'E', b'L', b'F'] {
                 while n < 10 {
-                    match crate::process::create_user_process(exit_elf) {
+                    match crate::process::create_user_process(exit_elf, crate::capability::CapSet::none(), crate::iflow::IflowLabel::default_user()) {
                         Some(idx) => {
                             indices[n] = idx;
                             n += 1;
@@ -191,17 +208,22 @@ pub extern "sysv64" fn kernel_main(bootinfo: *const libs::BootInfo) -> ! {
         }
     }
 
-    // Step 7: spawn cogman as the first userland process (init replacement).
-    // Falls back to the legacy steward init if cogman ELF is empty (not yet built).
+    // Step 7: spawn cogman as PID 1.
+    // Cogman's supervisor auto-starts fbtest (end-to-end framebuffer proof), then chains
+    // to session (display server + WM) once fbtest exits and releases the compositor.
     crate::arch::serial::write_str("[KRN] step7: cogman_spawn\r\n");
     let first_elf: &[u8] = if COGMAN_ELF.len() >= 4 && COGMAN_ELF[0..4] == [0x7f, b'E', b'L', b'F'] {
         crate::arch::serial::write_str("[KRN] step7: using cogman as init\r\n");
         COGMAN_ELF
+    } else if SESSION_ELF.len() >= 4 && SESSION_ELF[0..4] == [0x7f, b'E', b'L', b'F'] {
+        crate::arch::serial::write_str("[KRN] step7: cogman not ready, falling back to session\r\n");
+        SESSION_ELF
     } else {
-        crate::arch::serial::write_str("[KRN] step7: cogman not ready, falling back to steward init\r\n");
+        crate::arch::serial::write_str("[KRN] step7: falling back to steward init\r\n");
         INIT_ELF
     };
-    match crate::process::create_user_process(first_elf) {
+    // Cogman (init): ALL capabilities, public secrecy, full integrity — root of both trees.
+    match crate::process::create_user_process(first_elf, crate::capability::CapSet::all(), crate::iflow::IflowLabel::cogman()) {
         Some(idx) => {
             crate::arch::serial::write_str("[KRN] step7: init_idx=");
             crate::arch::serial::write_hex(idx as u64);

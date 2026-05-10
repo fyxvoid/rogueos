@@ -1,17 +1,21 @@
-//! PS/2 keyboard driver — polling, scan code set 1 (QEMU default).
+//! PS/2 keyboard + mouse driver — polling, scan code set 1 (QEMU default).
 //!
-//! Called from `sys_poll_input` to drain the PS/2 output buffer into the
-//! kernel input ring queue before the userland WM reads from it.
+//! Called from `sys_poll_input` / `sys_poll_mouse` to drain the PS/2
+//! output buffer into the kernel input ring queues.
 //! No interrupts required; purely polling-based.
 
 use super::port::{inb, outb};
-use libs::KeyEvent;
+use libs::{KeyEvent, MouseEvent};
 use libs::keycodes::*;
 
 const PS2_DATA:   u16 = 0x60;
 const PS2_STATUS: u16 = 0x64;
-/// Bit 0 of status register: output buffer full (data ready to read).
+/// Bit 0: output buffer full (data ready at 0x60).
 const OUTPUT_FULL: u8 = 0x01;
+/// Bit 1: input buffer full (controller busy; don't write command/data).
+const INPUT_FULL:  u8 = 0x02;
+/// Bit 5: output buffer filled by auxiliary (mouse) device.
+const AUX_DATA:    u8 = 0x20;
 
 /// Track extended-key prefix (0xE0) between scan code bytes.
 static mut EXTENDED: bool = false;
@@ -20,33 +24,139 @@ static mut EXTENDED: bool = false;
 /// bit 0 = shift, bit 1 = ctrl, bit 2 = alt, bit 3 = super.
 static mut MOD_BITS: u8 = 0;
 
-/// Initialize the PS/2 controller: flush the output buffer.
+// ── Mouse packet state machine ────────────────────────────────────────────────
+/// Which byte within the 3-byte mouse packet we're accumulating (0, 1, 2).
+static mut MOUSE_STATE: u8 = 0;
+static mut MOUSE_BYTES: [u8; 3] = [0; 3];
+
+// ── PS/2 controller helpers ───────────────────────────────────────────────────
+
+/// Wait until the controller input buffer is empty (safe to write).
+#[inline]
+fn wait_write_ready() {
+    for _ in 0..100_000u32 {
+        if unsafe { inb(PS2_STATUS) } & INPUT_FULL == 0 {
+            return;
+        }
+    }
+}
+
+/// Wait until the controller output buffer has data.
+#[inline]
+fn wait_read_ready() {
+    for _ in 0..100_000u32 {
+        if unsafe { inb(PS2_STATUS) } & OUTPUT_FULL != 0 {
+            return;
+        }
+    }
+}
+
+/// Send a byte to the PS/2 auxiliary (mouse) device.
+fn aux_write(byte: u8) {
+    wait_write_ready();
+    unsafe { outb(PS2_STATUS, 0xD4); } // route next byte to aux
+    wait_write_ready();
+    unsafe { outb(PS2_DATA, byte); }
+}
+
+/// Flush the output buffer (discard any stale bytes).
+fn flush_output() {
+    for _ in 0..32u8 {
+        if unsafe { inb(PS2_STATUS) } & OUTPUT_FULL == 0 {
+            break;
+        }
+        unsafe { let _ = inb(PS2_DATA); }
+    }
+}
+
+/// Initialize the PS/2 controller: flush output, enable keyboard, enable mouse.
 pub fn init() {
     unsafe {
-        // Drain any stale bytes in the output buffer.
-        for _ in 0..16u8 {
-            if inb(PS2_STATUS) & OUTPUT_FULL == 0 {
-                break;
-            }
-            let _ = inb(PS2_DATA);
-        }
-        // Enable keyboard (command 0xAE).
+        flush_output();
+        // Enable keyboard port (command 0xAE).
         outb(PS2_STATUS, 0xAE);
     }
     crate::arch::serial::write_str("[PS2] keyboard driver ready\r\n");
+    init_mouse();
 }
 
-/// Poll the PS/2 output buffer and push any pending `KeyEvent`s into the
-/// kernel input queue.  Call this from `sys_poll_input` before reading.
+/// Enable and configure the PS/2 auxiliary (mouse) device.
+fn init_mouse() {
+    unsafe {
+        // Enable aux port (command 0xA8).
+        wait_write_ready();
+        outb(PS2_STATUS, 0xA8);
+
+        // Read current configuration byte (command 0x20).
+        wait_write_ready();
+        outb(PS2_STATUS, 0x20);
+        wait_read_ready();
+        let config = inb(PS2_DATA);
+
+        // Enable aux interrupts (bit 1), clear "disable mouse" (bit 5).
+        let new_config = (config | 0x02) & !0x20;
+
+        // Write new configuration byte (command 0x60).
+        wait_write_ready();
+        outb(PS2_STATUS, 0x60);
+        wait_write_ready();
+        outb(PS2_DATA, new_config);
+    }
+
+    // Send "enable data reporting" (0xF4) to the mouse.
+    aux_write(0xF4);
+
+    // Drain the ACK byte from the mouse.
+    for _ in 0..10_000u32 {
+        if unsafe { inb(PS2_STATUS) } & OUTPUT_FULL != 0 {
+            unsafe { let _ = inb(PS2_DATA); }
+            break;
+        }
+    }
+
+    crate::arch::serial::write_str("[PS2] mouse driver ready\r\n");
+}
+
+/// Poll the PS/2 output buffer, routing data to keyboard or mouse queues.
+/// Call this from both `sys_poll_input` and `sys_poll_mouse` before reading.
 pub fn poll_and_push() {
-    // Drain up to 32 scan codes per poll to avoid starving the syscall.
-    for _ in 0..32u8 {
+    for _ in 0..64u8 {
         let status = unsafe { inb(PS2_STATUS) };
         if status & OUTPUT_FULL == 0 {
             break;
         }
-        let sc = unsafe { inb(PS2_DATA) };
-        process_scancode(sc);
+        let byte = unsafe { inb(PS2_DATA) };
+        if status & AUX_DATA != 0 {
+            process_mouse_byte(byte);
+        } else {
+            process_scancode(byte);
+        }
+    }
+}
+
+/// Accumulate a 3-byte PS/2 mouse packet and push a MouseEvent when complete.
+fn process_mouse_byte(byte: u8) {
+    unsafe {
+        let state = MOUSE_STATE;
+        MOUSE_BYTES[state as usize] = byte;
+        if state == 2 {
+            let flags = MOUSE_BYTES[0];
+            // Bit 3 of flags must be set; if not the packet is mis-synced — skip it.
+            if flags & 0x08 != 0 {
+                // X/Y are 9-bit signed: low 8 bits in MOUSE_BYTES[1]/[2],
+                // sign bit in flags bit 4/5.
+                let raw_x = MOUSE_BYTES[1] as i16;
+                let raw_y = MOUSE_BYTES[2] as i16;
+                let dx = if flags & 0x10 != 0 { raw_x | !0xFF } else { raw_x };
+                let dy = if flags & 0x20 != 0 { raw_y | !0xFF } else { raw_y };
+                // PS/2 Y is inverted relative to screen coordinates.
+                let ev = MouseEvent { dx, dy: -dy, buttons: flags & 0x07 };
+                crate::drivers::input::push_mouse_event(ev);
+            }
+            MOUSE_STATE = 0;
+        } else {
+            MOUSE_STATE = state + 1;
+        }
     }
 }
 

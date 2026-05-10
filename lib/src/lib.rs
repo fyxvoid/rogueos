@@ -54,6 +54,10 @@ pub const SYS_SURFACE_SET_Z: u64 = 0x219;
 pub const SYS_SHM_CREATE: u64 = 0x21A;
 /// Destroy a shared memory region. Args: shm_id (u32). Returns 0 or negative.
 pub const SYS_SHM_DESTROY: u64 = 0x21B;
+/// Map the compositor backbuffer into the calling process's address space.
+/// Only callable after SYS_CLAIM_COMPOSITOR. Args: out_ptr (*mut u64), out_w (*mut u32),
+/// out_h (*mut u32), out_stride (*mut u32). Returns 0 on success or negative error.
+pub const SYS_MAP_FRAMEBUFFER: u64 = 0x21C;
 
 /// IPC syscalls (namespace 0x320).
 /// Send a RwmMsg to target process. Args: target_pid (u32), msg_ptr (*const RwmMsg), flags (u32).
@@ -86,6 +90,109 @@ pub const SYS_PERF_CLOSE: u64 = 0x412;
 /// Scheduler control syscalls (namespace 0x420).
 /// Set nice level for current process. Args: nice(i64, -20..+19). Returns 0 on success.
 pub const SYS_SET_NICE: u64 = 0x420;
+/// Read real-time clock. Args: out_ptr(*mut u64, optional).
+/// Returns packed u64: bits[55:40]=year, [39:32]=month, [31:24]=day,
+///   [23:16]=hour, [15:8]=minute, [7:0]=second. All values are calendar values.
+pub const SYS_GETTIME: u64 = 0x421;
+
+// ── MMAP syscalls (namespace 0x430) ────────────────────────────────────────
+/// Map anonymous pages. Args: pages (u64), prot (u32). Returns VA or negative error.
+pub const SYS_MMAP:   u64 = 0x430;
+/// Unmap anonymous pages. Args: va (u64), pages (u64). Returns 0 or negative error.
+pub const SYS_MUNMAP: u64 = 0x431;
+
+// ── Capability syscalls (namespace 0x500) ──────────────────────────────────
+/// Grant capability bits to a process.
+/// Args: target_pid (u32), cap_bits (u64). Requires CAP_GRANT.
+pub const SYS_CAP_GRANT:  u64 = 0x500;
+/// Revoke capability bits from a process.
+/// Args: target_pid (u32), cap_bits (u64). Requires CAP_GRANT.
+pub const SYS_CAP_REVOKE: u64 = 0x501;
+/// Query own capability bitmask. Returns cap_bits (u64) in rax.
+pub const SYS_CAP_QUERY:  u64 = 0x502;
+
+// ── Journal syscalls (namespace 0x510) ─────────────────────────────────────
+/// Write bytes to the Cogman journal (overwrites; not append).
+/// Args: ptr (*const u8), len (usize). Requires CAP_JOURNAL.
+pub const SYS_JOURNAL_WRITE: u64 = 0x510;
+/// Read the current journal contents into caller buffer.
+/// Args: ptr (*mut u8), cap (usize). Returns bytes written. Requires CAP_JOURNAL.
+pub const SYS_JOURNAL_READ:  u64 = 0x511;
+
+// ── Information flow syscalls (namespace 0x520) ───────────────────────────
+/// Query the IFC label of any process.
+/// Args: pid (u32), out_secrecy (*mut u64), out_integrity (*mut u64). Returns 0 or negative.
+pub const SYS_IFLOW_GET:         u64 = 0x520;
+/// Raise own secrecy tags / lower own integrity tags (always permitted).
+/// Args: add_secrecy (u64), remove_integrity (u64). Returns 0.
+pub const SYS_IFLOW_TAINT:       u64 = 0x521;
+/// Lower own secrecy (declassify). Requires CAP_DECLASSIFY.
+/// Args: remove_secrecy (u64). Returns 0 or negative.
+pub const SYS_IFLOW_DECLASSIFY:  u64 = 0x522;
+/// Raise integrity of a target process (endorse). Requires CAP_ENDORSE.
+/// Args: target_pid (u32), add_integrity (u64). Returns 0 or negative.
+pub const SYS_IFLOW_ENDORSE:     u64 = 0x523;
+
+// ── Capability bitmask constants ───────────────────────────────────────────
+pub mod cap {
+    /// Spawn new processes via SYS_SPAWN.
+    pub const SPAWN:      u64 = 1 << 0;
+    /// Call SYS_REBOOT.
+    pub const REBOOT:     u64 = 1 << 1;
+    /// Access framebuffer: fb_clear/fill/flush/blit, surface ops, compositor.
+    pub const DISPLAY:    u64 = 1 << 2;
+    /// Read input events: SYS_POLL_INPUT / SYS_POLL_MOUSE.
+    pub const INPUT:      u64 = 1 << 3;
+    /// Send IPC messages: SYS_IPC_SEND.
+    pub const IPC_SEND:   u64 = 1 << 4;
+    /// Receive IPC messages: SYS_IPC_RECV.
+    pub const IPC_RECV:   u64 = 1 << 5;
+    /// Read files/directories.
+    pub const FS_READ:    u64 = 1 << 6;
+    /// Write / modify files.
+    pub const FS_WRITE:   u64 = 1 << 7;
+    /// Use AMD PMU performance counters.
+    pub const PERF:       u64 = 1 << 8;
+    /// Set hardware breakpoints.
+    pub const HW_BP:      u64 = 1 << 9;
+    /// Claim compositor / SYS_CLAIM_COMPOSITOR, SYS_COMPOSITE_ALL.
+    pub const COMPOSITOR: u64 = 1 << 10;
+    /// Grant or revoke capabilities on other processes.
+    pub const GRANT:      u64 = 1 << 11;
+    /// Inspect process list: SYS_GET_PROC_INFO.
+    pub const PROC_INFO:  u64 = 1 << 12;
+    /// Read/write the Cogman restart journal.
+    pub const JOURNAL:    u64 = 1 << 13;
+    /// Adjust own scheduling priority: SYS_SET_NICE.
+    pub const SCHED:      u64 = 1 << 14;
+    /// Send arbitrary signals / SYS_KILL (future).
+    pub const KILL:       u64 = 1 << 15;
+    /// SHM operations: SYS_SHM_CREATE / SYS_SHM_DESTROY.
+    pub const SHM:        u64 = 1 << 16;
+    /// Lower own secrecy label (declassify). Required for SYS_IFLOW_DECLASSIFY.
+    pub const DECLASSIFY: u64 = 1 << 17;
+    /// Raise another process's integrity label (endorse). Required for SYS_IFLOW_ENDORSE.
+    pub const ENDORSE:    u64 = 1 << 18;
+
+    /// All capabilities — only Cogman starts with this.
+    pub const ALL:  u64 = u64::MAX;
+    /// No capabilities — default for every spawned process.
+    pub const NONE: u64 = 0;
+
+    /// Typical desktop app: display + input + ipc + shm.
+    pub const DESKTOP_APP: u64 = DISPLAY | INPUT | IPC_SEND | IPC_RECV | SHM;
+    /// Shell: spawn + fs + ipc + display + input.
+    pub const SHELL: u64 = SPAWN | FS_READ | FS_WRITE | IPC_SEND | IPC_RECV | DISPLAY | INPUT;
+    /// WM / compositor: display + input + compositor + spawn + ipc + shm.
+    pub const COMPOSITOR_WM: u64 = DISPLAY | INPUT | COMPOSITOR | SPAWN | IPC_SEND | IPC_RECV | SHM;
+}
+
+/// Memory protection constants for SYS_MMAP.
+pub mod prot {
+    pub const READ:  u32 = 0x1;
+    pub const WRITE: u32 = 0x2;
+    pub const EXEC:  u32 = 0x4;
+}
 
 /// Flag for SYS_IPC_RECV: return SYSERR_AGAIN immediately instead of blocking.
 pub const IPC_NONBLOCK: u32 = 0x01;
@@ -610,6 +717,13 @@ pub struct BootInfo {
     pub bootloader_version: u32,
     /// Reserved for future expansion; must be zeroed by the bootloader.
     pub _reserved: u32,
+    /// Physical address of the SMBIOS 3.x entry point structure (or 2.x if
+    /// 3.x is absent), as found in the UEFI configuration table. 0 if absent.
+    pub smbios_addr: u64,
+    /// Physical address of the EFI Runtime Services table, captured before
+    /// ExitBootServices. Valid as long as UEFI runtime memory regions remain
+    /// mapped. 0 if unavailable.
+    pub runtime_services_addr: u64,
 }
 
 #[cfg(test)]

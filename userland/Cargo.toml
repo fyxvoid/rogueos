@@ -3,6 +3,7 @@ name = "userland"
 version = "0.1.0"
 edition = "2021"
 description = "Minimal Rust userland: init, shell, syscall wrappers (no_std)"
+autobins = false
 
 [[bin]]
 name = "init"
@@ -51,6 +52,22 @@ path = "src/bin/session.rs"
 [[bin]]
 name = "rwm"
 path = "src/bin/rwm.rs"
+
+[[bin]]
+name = "fbtest"
+path = "src/bin/fbtest.rs"
+
+[[bin]]
+name = "inputtest"
+path = "src/bin/inputtest.rs"
+
+[[bin]]
+name = "terminal"
+path = "src/bin/terminal.rs"
+
+[[bin]]
+name = "nova"
+path = "src/bin/nova.rs"
 
 [dependencies]
 libs = { path = "../lib" }

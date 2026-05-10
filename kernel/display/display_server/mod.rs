@@ -66,6 +66,16 @@ pub fn get_compositor_pid() -> Option<u32> {
     unsafe { COMPOSITOR_PID }
 }
 
+/// Release compositor authority held by `pid`. Called when the compositor process exits.
+/// No-op if `pid` does not match the registered compositor.
+pub fn release_compositor(pid: u32) {
+    unsafe {
+        if COMPOSITOR_PID == Some(pid) {
+            COMPOSITOR_PID = None;
+        }
+    }
+}
+
 /// Allocate a new surface owned by `owner_pid`.
 /// Returns the surface's stable ID, or `None` if all slots are occupied.
 pub fn surface_create(owner_pid: u32) -> Option<u32> {
@@ -147,7 +157,9 @@ pub fn surface_commit(id: u32, dst_x: u32, dst_y: u32, caller_pid: u32) -> bool 
         None => return false,
     };
     if ptr.is_null() { return false; }
-    crate::drivers::framebuffer::blit(dst_x, dst_y, w, h, stride, ptr);
+    // Composite into the RAM backbuffer instead of MMIO directly.
+    // Falls back to MMIO blit if no backbuffer has been allocated yet.
+    crate::syscall::dispatcher::gfx::backbuffer_blit(dst_x, dst_y, w, h, stride, ptr);
     true
 }
 
@@ -172,16 +184,18 @@ pub fn composite_all() {
             j -= 1;
         }
     }
-    // Blit in order.
+    // Composite each surface into the RAM backbuffer in z-order.
+    // Falls back to direct MMIO blit per surface if no backbuffer allocated.
     for k in 0..count {
         let slot = unsafe { &SLOTS[order[k]] };
         if let Some((ptr, w, h, stride)) = slot.buffer {
             if !ptr.is_null() {
-                crate::drivers::framebuffer::blit(0, 0, w, h, stride, ptr);
+                crate::syscall::dispatcher::gfx::backbuffer_blit(0, 0, w, h, stride, ptr);
             }
         }
     }
-    crate::drivers::framebuffer::flush();
+    // Final MMIO flush is handled by sys_fb_flush (BACKBUFFER → MMIO),
+    // called by the compositor at the end of its draw loop.
 }
 
 /// Set the z-order for a surface (lower = further back).

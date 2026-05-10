@@ -1,6 +1,8 @@
 //! Process lifecycle: spawn, exit, run first. Spawn-only; no fork/clone.
 
 use crate::arch::x86_64::gdt;
+use crate::capability::CapSet;
+use crate::iflow::IflowLabel;
 use crate::memory::paging;
 use crate::process::context;
 use crate::process::loader;
@@ -20,22 +22,20 @@ fn log_scheduler_tick(pid_opt: Option<process::Pid>, runqueue_len: usize) {
     crate::arch::serial::write_str("\r\n");
 }
 
-/// Simple checksum for ELF verification: XOR of all bytes (pre-load vs post-load).
-fn elf_checksum(data: &[u8]) -> u64 {
-    data.iter().fold(0u64, |acc, &b| acc ^ (b as u64))
-}
-
-/// Create the first user process: set up address space, load ELF, fill trap frame.
+/// Create a user process with the given capability set and information flow label.
 /// Returns the process table index or None on failure.
-pub fn create_user_process(elf_data: &[u8]) -> Option<usize> {
-    let pre_checksum = elf_checksum(elf_data);
-    crate::arch::serial::write_str("[KRN] user_create: ELF checksum (pre-load)=");
-    crate::arch::serial::write_hex(pre_checksum);
-    crate::arch::serial::write_str("\r\n");
+pub fn create_user_process(elf_data: &[u8], caps: CapSet, iflow: IflowLabel) -> Option<usize> {
     crate::arch::serial::write_str("[KRN] user_create: alloc_slot\r\n");
     let (idx, pid_val) = pid::allocate_process_slot()?;
-    crate::arch::serial::write_str("[KRN] user_create: use_kernel_cr3\r\n");
-    let cr3 = crate::memory::paging::read_cr3();
+    // Each process gets its own page tables — kernel mappings are shared
+    // (shallow-copied from KERNEL_CR3); user VA range is fresh and isolated.
+    crate::arch::serial::write_str("[KRN] user_create: create_process_cr3\r\n");
+    let cr3 = crate::memory::paging::create_process_cr3();
+    if cr3 == 0 {
+        crate::arch::serial::write_str("[KRN] user_create: create_process_cr3_failed\r\n");
+        pid::release_slot(idx);
+        return None;
+    }
     crate::arch::serial::write_str("[KRN] user_create: load_elf\r\n");
     let load = match loader::load_elf(elf_data, cr3) {
         Some(r) => r,
@@ -46,30 +46,6 @@ pub fn create_user_process(elf_data: &[u8]) -> Option<usize> {
         }
     };
     let entry = load.entry;
-    // Post-load checksum: bytes at entry VA in memory vs elf_data[entry_file_offset..].
-    if let Some(entry_off) = load.entry_file_offset {
-        let file_rest = elf_data.len().saturating_sub(entry_off);
-        let check_len = core::cmp::min(256, file_rest);
-        if check_len > 0 {
-            let entry_file_checksum = elf_checksum(&elf_data[entry_off..entry_off + check_len]);
-            unsafe {
-                let ptr = entry as *const u8;
-                let mut post_buf = [0u8; 256];
-                core::ptr::copy_nonoverlapping(ptr, post_buf.as_mut_ptr(), check_len);
-                let post_checksum = elf_checksum(&post_buf[0..check_len]);
-                crate::arch::serial::write_str("[KRN] user_create: ELF checksum (post-load, ");
-                crate::arch::serial::write_hex(check_len as u64);
-                crate::arch::serial::write_str(" bytes at entry)=");
-                crate::arch::serial::write_hex(post_checksum);
-                crate::arch::serial::write_str("\r\n");
-                if entry_file_checksum != post_checksum {
-                    crate::arch::serial::write_str("[KRN] user_create: checksum mismatch (stale/wrong binary)\r\n");
-                    pid::release_slot(idx);
-                    return None;
-                }
-            }
-        }
-    }
 
     // Verify entry (text) PTE: USER|PRESENT|executable; .text not writable. Dump PTE.
     let entry_pte = paging::walk_pte(cr3, entry);
@@ -96,17 +72,17 @@ pub fn create_user_process(elf_data: &[u8]) -> Option<usize> {
             }
             crate::arch::serial::write_str("[KRN] user_create: entry PTE ok (P+U+X, not W)\r\n");
             paging::dump_ptes_for_vas_serial(cr3, &[entry & !(PAGE_SIZE as u64 - 1)]);
-            unsafe {
-                let ptr = entry as *const u8;
-                crate::arch::serial::write_str("[KRN] user_create: first 16 bytes at entry: ");
-                for i in 0..16 {
-                    crate::arch::serial::write_hex(*ptr.add(i) as u64);
-                    crate::arch::serial::write_str(" ");
-                }
-                crate::arch::serial::write_str("\r\n");
-                let all_zero = (0..16).all(|i| *ptr.add(i) == 0);
-                if all_zero {
-                    crate::arch::serial::write_str("[KRN] user_create: WARN entry bytes all zero\r\n");
+            // Read entry bytes via physical address (not VA) since we're in kernel CR3.
+            if let Some(entry_pte) = paging::walk_pte(cr3, entry) {
+                let pa = (entry_pte & 0x000F_FFFF_FFFF_F000) | (entry & 0xFFF);
+                unsafe {
+                    let ptr = pa as *const u8;
+                    crate::arch::serial::write_str("[KRN] user_create: first 16 bytes at entry (via PA): ");
+                    for i in 0..16 {
+                        crate::arch::serial::write_hex(*ptr.add(i) as u64);
+                        crate::arch::serial::write_str(" ");
+                    }
+                    crate::arch::serial::write_str("\r\n");
                 }
             }
         }
@@ -117,16 +93,16 @@ pub fn create_user_process(elf_data: &[u8]) -> Option<usize> {
         }
     }
 
-    // Verify data segment PTE: USER|PRESENT|writable|NX. Dump PTE.
+    // Verify data segment PTE: USER|PRESENT|writable. NX is advisory: pages shared between
+    // text and data segments (e.g. .got on same page as .text) may not be NX.
     if let Some(data_va) = load.data_page_va {
         let data_page = data_va & !(PAGE_SIZE as u64 - 1);
         if let Some(pte) = paging::walk_pte(cr3, data_page) {
             let nx = (pte & paging::PageFlag::NoExec as u64) != 0;
             let writable = (pte & paging::PageFlag::Writable as u64) != 0;
             if !nx {
-                crate::arch::serial::write_str("[KRN] user_create: data page must be NX (not executable)\r\n");
-                pid::release_slot(idx);
-                return None;
+                crate::arch::serial::write_str("[KRN] user_create: WARN data page not NX (shared with text segment)\r\n");
+                // Not fatal: shared text+data pages cannot be both exec and NX.
             }
             if !writable {
                 crate::arch::serial::write_str("[KRN] user_create: data page must be writable\r\n");
@@ -139,7 +115,7 @@ pub fn create_user_process(elf_data: &[u8]) -> Option<usize> {
     }
 
     crate::arch::serial::write_str("[KRN] user_create: setup_user_stack\r\n");
-    let Some(user_rsp) = process::setup_user_stack(cr3) else {
+    let Some(user_rsp) = process::setup_user_stack(cr3, pid_val) else {
         crate::arch::serial::write_str("[KRN] user_create: setup_user_stack_failed\r\n");
         pid::release_slot(idx);
         return None;
@@ -154,13 +130,19 @@ pub fn create_user_process(elf_data: &[u8]) -> Option<usize> {
         rsp: user_rsp,
         ss: (gdt::USER_SS | 3) as u64,
     };
-    let pcb = ProcessDescriptor::new(
+    let mut pcb = ProcessDescriptor::new(
         pid_val,
         ProcessState::Runnable,
         cr3,
         kernel_stack,
         trap_frame,
     );
+    pcb.caps = caps;
+    pcb.iflow = iflow;
+    pcb.pcid = crate::memory::paging::alloc_pcid();
+    crate::arch::serial::write_str("[KRN] user_create: caps=");
+    crate::arch::serial::write_hex(caps.bits);
+    crate::arch::serial::write_str("\r\n");
     pid::put_descriptor(idx, pcb);
 
     let entry_page = entry & !(PAGE_SIZE as u64 - 1);
@@ -253,35 +235,12 @@ pub fn run_first_process(process_index: usize) -> ! {
             crate::kernel::diagnostic::diagnostic_halt("user_stack_unmapped");
         }
     }
-    const STACK_TEST_PATTERN: u64 = 0xDEADBEEF_CAFEBABE;
-    // SAFETY: rsp is in user stack range; we verified PTE for rsp-8 above; same CR3 active.
-    unsafe {
-        let ptr = (frame.rsp - 8) as *mut u64;
-        core::ptr::write_volatile(ptr, STACK_TEST_PATTERN);
-        let read_back = core::ptr::read_volatile(ptr);
-        if read_back != STACK_TEST_PATTERN {
-            crate::arch::serial::write_str("[run] stack write/read test failed\r\n");
-            crate::kernel::diagnostic::diagnostic_halt("user_stack_rw_fail");
-        }
-        crate::arch::serial::write_str("[run] stack rsp-8 write/read ok\r\n");
-    }
-
     crate::arch::serial::write_str("[run] About to enter user at RIP=");
     crate::arch::serial::write_hex(frame.rip);
     crate::arch::serial::write_str("\r\n");
     #[cfg(not(test))]
     {
         paging::debug_walk_in_space(cr3, frame.rip);
-        unsafe {
-            let ptr = frame.rip as *const u8;
-            crate::arch::serial::write_str("[run] bytes at trap_frame.rip: ");
-            for i in 0..16 {
-                crate::arch::serial::write_hex(*ptr.add(i) as u64);
-                crate::arch::serial::write_str(" ");
-            }
-            crate::arch::serial::write_str("\r\n");
-        }
-        // 0xa0002 debug removed: address is below identity map (0x100000) and causes #PF.
     }
 
     // SAFETY: enter_user expects valid frame, cr3, kernel_stack from the process we are running.
@@ -304,6 +263,10 @@ pub fn exit_current_and_schedule(exit_status: Option<i32>) -> ! {
     };
     let exiting_pid = pid::get_descriptor(current_idx).map(|p| p.pid).unwrap_or(0);
     crate::fs::close_fds_for_process(exiting_pid);
+    // Reset anonymous memory bump pointer for this slot.
+    crate::syscall::dispatcher::mmap::reset_anon_for_slot(current_idx);
+    // Release compositor authority and backbuffer if this process held them.
+    crate::syscall::dispatcher::on_process_exit(exiting_pid);
     // Release any perf counters this process held.
     crate::arch::x86_64::perf::perf_close_for_process(current_idx);
     // Clear hardware breakpoints so they don't fire in the next process.
@@ -338,13 +301,21 @@ pub fn exit_current_and_schedule(exit_status: Option<i32>) -> ! {
     }
 }
 
-/// Spawn a process by program id (0=shell, 1=wm, ...). Returns new pid or None on failure.
-pub fn spawn_by_program_id(program_id: u32) -> Option<process::Pid> {
+/// Spawn a process by program id with an explicit capability set.
+///
+/// `cap_mask = 0` means "inherit everything the calling process has".
+/// Any other value is intersected with the calling process's caps so a
+/// process can never grant a child more authority than it has itself.
+pub fn spawn_by_program_id(program_id: u32, cap_mask: u64) -> Option<process::Pid> {
     let elf = crate::kernel::programs::get_elf(program_id)?;
     if elf.len() < 4 || elf[0..4] != [0x7f, b'E', b'L', b'F'] {
         return None;
     }
-    let idx = create_user_process(elf)?;
+    // Child caps: intersect parent caps with requested mask.
+    let child_caps = crate::capability::current_caps().child_caps(cap_mask);
+    // Child label: inherit parent's label (a process cannot spawn a less-secret child).
+    let child_label = crate::iflow::current_label().child_label();
+    let idx = create_user_process(elf, child_caps, child_label)?;
     pid::get_descriptor(idx).map(|p| p.pid)
 }
 

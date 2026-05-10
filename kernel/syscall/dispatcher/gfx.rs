@@ -1,8 +1,28 @@
 //! Graphics and input syscalls: poll_input, poll_mouse, fb_clear, fb_fill_rect,
-//! fb_flush, fb_blit, surface_create/destroy/attach/commit, screen_size.
+//! fb_flush, fb_blit, surface_create/destroy/attach/commit, screen_size,
+//! map_framebuffer (Option B: compositor backbuffer mapped into userland).
 
 use crate::syscall::user_ptr::{self, SysErr};
 use libs::{KeyEvent, MouseEvent};
+
+// ── Compositor backbuffer (Option B) ─────────────────────────────────────────
+//
+// Allocated once on first SYS_MAP_FRAMEBUFFER call. Identity-mapped (VA == PA)
+// so returning the physical address to userland is sufficient under the current
+// shared-CR3 model. When per-process page tables land this becomes a proper
+// mmap into the compositor's address space.
+
+struct Backbuffer {
+    base: *mut u8,
+    width: u32,
+    height: u32,
+    stride_bytes: u32, // bytes per row
+}
+
+unsafe impl Send for Backbuffer {}
+unsafe impl Sync for Backbuffer {}
+
+static mut BACKBUFFER: Option<Backbuffer> = None;
 
 pub(super) fn sys_poll_input(ev_ptr: *mut KeyEvent) -> Result<u64, SysErr> {
     if ev_ptr.is_null() {
@@ -28,6 +48,8 @@ pub(super) fn sys_poll_mouse(ev_ptr: *mut MouseEvent) -> Result<u64, SysErr> {
     }
     let cr3 = user_ptr::current_cr3()?;
     user_ptr::validate_user_range(cr3, ev_ptr as u64, core::mem::size_of::<MouseEvent>(), true)?;
+    // Drain PS/2 buffer so fresh mouse packets are available.
+    crate::drivers::hid_stub::poll_input();
     match crate::drivers::input::pop_mouse_event() {
         Some(ev) => {
             unsafe { core::ptr::write_volatile(ev_ptr, ev) }
@@ -38,18 +60,117 @@ pub(super) fn sys_poll_mouse(ev_ptr: *mut MouseEvent) -> Result<u64, SysErr> {
 }
 
 pub(super) fn sys_fb_clear(color: u32) -> Result<u64, SysErr> {
+    unsafe {
+        if let Some(ref bb) = BACKBUFFER {
+            crate::drivers::framebuffer::fill_rect_ram(
+                bb.base, bb.stride_bytes, bb.width, bb.height,
+                0, 0, bb.width, bb.height, color,
+            );
+            return Ok(0);
+        }
+    }
     crate::drivers::framebuffer::get_framebuffer().clear(color);
     Ok(0)
 }
 
 pub(super) fn sys_fb_fill_rect(x: u32, y: u32, w: u32, h: u32, color: u32) -> Result<u64, SysErr> {
+    unsafe {
+        if let Some(ref bb) = BACKBUFFER {
+            crate::drivers::framebuffer::fill_rect_ram(
+                bb.base, bb.stride_bytes, bb.width, bb.height,
+                x, y, w, h, color,
+            );
+            return Ok(0);
+        }
+    }
     crate::drivers::framebuffer::get_framebuffer().fill_rect(x, y, w, h, color);
     Ok(0)
 }
 
 pub(super) fn sys_fb_flush() -> Result<u64, SysErr> {
+    // Only the registered compositor may blit its backbuffer.
+    // Non-compositor processes (legacy sys_fb_fill_rect path) fall through to flush().
+    let caller = crate::process::current_pid().unwrap_or(0);
+    let is_compositor = crate::display::display_server::get_compositor_pid()
+        .map(|pid| pid == caller)
+        .unwrap_or(false);
+    unsafe {
+        if is_compositor {
+            if let Some(ref bb) = BACKBUFFER {
+                crate::drivers::framebuffer::blit(
+                    0, 0, bb.width, bb.height, bb.stride_bytes, bb.base as *const u8,
+                );
+                return Ok(0);
+            }
+        }
+    }
     crate::drivers::framebuffer::get_framebuffer().flush();
     Ok(0)
+}
+
+/// Called from the process exit path: if `pid` was the compositor, zero and
+/// drop the backbuffer so the next compositor starts with a clean slate.
+pub fn on_compositor_exit(pid: u32) {
+    let is_compositor = crate::display::display_server::get_compositor_pid()
+        .map(|p| p == pid)
+        .unwrap_or(false);
+    if !is_compositor {
+        return;
+    }
+    unsafe {
+        if let Some(ref bb) = BACKBUFFER {
+            let size = (bb.stride_bytes as usize).saturating_mul(bb.height as usize);
+            core::ptr::write_bytes(bb.base, 0, size);
+        }
+        BACKBUFFER = None;
+    }
+    crate::display::display_server::release_compositor(pid);
+}
+
+// ── Compositor backbuffer helpers (called by display_server) ─────────────────
+//
+// These allow display_server::surface_commit and composite_all to write into
+// the compositor RAM backbuffer instead of directly to MMIO.
+// Fall back to direct MMIO if the backbuffer has not been allocated yet.
+
+/// Blit a surface's RAM pixel buffer into the compositor backbuffer (RAM→RAM).
+/// Falls back to a direct MMIO blit if no backbuffer is allocated.
+/// Called by `display_server::surface_commit` and `display_server::composite_all`.
+pub(crate) fn backbuffer_blit(
+    dst_x: u32,
+    dst_y: u32,
+    w: u32,
+    h: u32,
+    src_stride: u32,
+    src: *const u8,
+) {
+    unsafe {
+        if let Some(ref bb) = BACKBUFFER {
+            crate::drivers::framebuffer::blit_ram(
+                bb.base, dst_x, dst_y,
+                bb.stride_bytes, bb.width, bb.height,
+                src, src_stride, w, h,
+            );
+            return;
+        }
+    }
+    // No backbuffer yet — fall back to legacy MMIO path so display still works.
+    crate::drivers::framebuffer::blit(dst_x, dst_y, w, h, src_stride, src);
+}
+
+/// Fill a rectangle in the compositor backbuffer (RAM).
+/// Falls back to MMIO fill_rect if no backbuffer is allocated.
+pub(crate) fn backbuffer_fill_rect(x: u32, y: u32, w: u32, h: u32, color: u32) {
+    unsafe {
+        if let Some(ref bb) = BACKBUFFER {
+            crate::drivers::framebuffer::fill_rect_ram(
+                bb.base, bb.stride_bytes, bb.width, bb.height,
+                x, y, w, h, color,
+            );
+            return;
+        }
+    }
+    crate::drivers::framebuffer::get_framebuffer().fill_rect(x, y, w, h, color);
 }
 
 // ── Surface protocol syscalls ─────────────────────────────────────────────
@@ -198,6 +319,57 @@ pub(super) fn sys_shm_destroy(shm_id: u32) -> Result<u64, SysErr> {
         // Free all frames.  Non-contiguous frames were individually allocated
         // so we free only the base frame here for now.
         crate::memory::physical::free_frame(s.base);
+    }
+    Ok(0)
+}
+
+/// Map the compositor backbuffer into the calling process's address space.
+/// Allocates a contiguous backbuffer on first call (sized to match the GOP framebuffer).
+/// Only callable after SYS_CLAIM_COMPOSITOR. Returns 0; output params receive the
+/// backbuffer VA, width, height, and stride in bytes.
+pub(super) fn sys_map_framebuffer(
+    out_ptr: *mut u64,
+    out_w: *mut u32,
+    out_h: *mut u32,
+    out_stride: *mut u32,
+) -> Result<u64, SysErr> {
+    if out_ptr.is_null() || out_w.is_null() || out_h.is_null() || out_stride.is_null() {
+        return Err(SysErr::INVAL);
+    }
+    // Only the claimed compositor may access the backbuffer directly.
+    let caller = crate::process::current_pid().unwrap_or(0);
+    match crate::display::display_server::get_compositor_pid() {
+        Some(comp_pid) if comp_pid == caller => {}
+        _ => return Err(SysErr::PERM),
+    }
+
+    let cr3 = user_ptr::current_cr3()?;
+    user_ptr::validate_user_range(cr3, out_ptr as u64, 8, true)?;
+    user_ptr::validate_user_range(cr3, out_w as u64, 4, true)?;
+    user_ptr::validate_user_range(cr3, out_h as u64, 4, true)?;
+    user_ptr::validate_user_range(cr3, out_stride as u64, 4, true)?;
+
+    unsafe {
+        if BACKBUFFER.is_none() {
+            let (width, height, stride_bytes) = crate::drivers::framebuffer::dimensions()
+                .ok_or(SysErr::NOENT)?;
+            let size = (stride_bytes as usize).saturating_mul(height as usize);
+            let pages = (size + 4095) / 4096;
+            let base_phys = crate::memory::physical::alloc_contiguous(pages);
+            if base_phys == 0 {
+                return Err(SysErr::NOMEM);
+            }
+            // Identity-mapped: zero the backbuffer so userland starts with a clean slate.
+            let base_ptr = base_phys as *mut u8;
+            core::ptr::write_bytes(base_ptr, 0, size);
+            BACKBUFFER = Some(Backbuffer { base: base_ptr, width, height, stride_bytes });
+        }
+
+        let bb = BACKBUFFER.as_ref().unwrap();
+        core::ptr::write_volatile(out_ptr, bb.base as u64);
+        core::ptr::write_volatile(out_w, bb.width);
+        core::ptr::write_volatile(out_h, bb.height);
+        core::ptr::write_volatile(out_stride, bb.stride_bytes);
     }
     Ok(0)
 }
